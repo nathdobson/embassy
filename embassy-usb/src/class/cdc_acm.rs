@@ -144,7 +144,11 @@ impl<'d> Handler for Control<'d> {
 
     fn control_out(&mut self, req: control::Request, data: &[u8]) -> Option<OutResponse> {
         if (req.request_type, req.recipient, req.index)
-            != (RequestType::Class, Recipient::Interface, self.comm_if.0 as u16)
+            != (
+                RequestType::Class,
+                Recipient::Interface,
+                self.comm_if.0 as u16,
+            )
         {
             return None;
         }
@@ -191,7 +195,11 @@ impl<'d> Handler for Control<'d> {
 
     fn control_in<'a>(&'a mut self, req: Request, buf: &'a mut [u8]) -> Option<InResponse<'a>> {
         if (req.request_type, req.recipient, req.index)
-            != (RequestType::Class, Recipient::Interface, self.comm_if.0 as u16)
+            != (
+                RequestType::Class,
+                Recipient::Interface,
+                self.comm_if.0 as u16,
+            )
         {
             return None;
         }
@@ -216,7 +224,11 @@ impl<'d> Handler for Control<'d> {
 impl<'d, D: Driver<'d>> CdcAcmClass<'d, D> {
     /// Creates a new CdcAcmClass with the provided UsbBus and `max_packet_size` in bytes. For
     /// full-speed devices, `max_packet_size` has to be one of 8, 16, 32 or 64.
-    pub fn new(builder: &mut Builder<'d, D>, state: &'d mut State<'d>, max_packet_size: u16) -> Self {
+    pub fn new(
+        builder: &mut Builder<'d, D>,
+        state: &'d mut State<'d>,
+        max_packet_size: u16,
+    ) -> Self {
         assert!(builder.control_buf_len() >= 7);
 
         let mut func = builder.function(USB_CLASS_CDC, CDC_SUBCLASS_ACM, CDC_PROTOCOL_NONE);
@@ -349,7 +361,9 @@ impl<'d, D: Driver<'d>> CdcAcmClass<'d, D> {
                 read_ep: self.read_ep,
                 control: self.control,
             },
-            ControlChanged { control: self.control },
+            ControlChanged {
+                control: self.control,
+            },
         )
     }
 }
@@ -365,6 +379,17 @@ impl<'d> ControlChanged<'d> {
     /// Return a future for when the control settings change
     pub async fn control_changed(&self) {
         self.control.changed().await;
+    }
+    pub fn line_coding(&self) -> LineCoding {
+        self.control.line_coding.lock(Cell::get)
+    }
+    pub fn dtr(&self) -> bool {
+        self.control.dtr.load(Ordering::Relaxed)
+    }
+
+    /// Gets the RTS (request to send) state
+    pub fn rts(&self) -> bool {
+        self.control.rts.load(Ordering::Relaxed)
     }
 }
 

@@ -1,6 +1,7 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
+#![feature(result_option_map_or_default)]
 
 use core::fmt::Write as _;
 use core::future::Future;
@@ -124,8 +125,11 @@ impl<const N: usize, T: ReceiverHandler + Send + Sync> UsbLogger<N, T> {
         }
     }
 
-    async fn run_logger_class<'d, D>(&self, sender: &mut Sender<'d, D>, receiver: &mut Receiver<'d, D>)
-    where
+    pub async fn run_logger_class<'d, D>(
+        &self,
+        sender: &mut Sender<'d, D>,
+        receiver: &mut Receiver<'d, D>,
+    ) where
         D: Driver<'d>,
     {
         let log_fut = async {
@@ -134,7 +138,8 @@ impl<const N: usize, T: ReceiverHandler + Send + Sync> UsbLogger<N, T> {
             loop {
                 let len = self.buffer.read(&mut rx[..]).await;
                 if Err(EndpointError::Disabled) == sender.write_packet(&rx[..len]).await
-                    || len as u8 == MAX_PACKET_SIZE && Err(EndpointError::Disabled) == sender.write_packet(&[]).await
+                    || len as u8 == MAX_PACKET_SIZE
+                        && Err(EndpointError::Disabled) == sender.write_packet(&[]).await
                 {
                     sender.wait_connection().await;
                 };
@@ -167,7 +172,7 @@ impl<const N: usize, T: ReceiverHandler + Send + Sync> UsbLogger<N, T> {
 
     /// Creates the futures needed for the logger from a given class
     /// This can be used in cases where the usb device is already in use for another connection
-    pub async fn create_future_from_class<'d, D>(&'d self, class: CdcAcmClass<'d, D>)
+    pub async fn create_future_from_class<'d, D>(&'d self, class: CdcAcmClass<'d, D>) -> !
     where
         D: Driver<'d>,
     {
@@ -237,15 +242,20 @@ macro_rules! run {
         unsafe {
             let _ = ::log::set_logger_racy(&LOGGER).map(|()| log::set_max_level_racy($l));
         }
-        let _ = LOGGER.run(&mut ::embassy_usb_logger::LoggerState::new(), $p).await;
+        let _ = LOGGER
+            .run(&mut ::embassy_usb_logger::LoggerState::new(), $p)
+            .await;
     };
 
     ( $x:expr, $l:expr, $p:ident, $h:ty ) => {
         unsafe {
-            static mut LOGGER: ::embassy_usb_logger::UsbLogger<$x, $h> = ::embassy_usb_logger::UsbLogger::new();
+            static mut LOGGER: ::embassy_usb_logger::UsbLogger<$x, $h> =
+                ::embassy_usb_logger::UsbLogger::new();
             LOGGER.with_handler(<$h>::new());
             let _ = ::log::set_logger_racy(&LOGGER).map(|()| log::set_max_level_racy($l));
-            let _ = LOGGER.run(&mut ::embassy_usb_logger::LoggerState::new(), $p).await;
+            let _ = LOGGER
+                .run(&mut ::embassy_usb_logger::LoggerState::new(), $p)
+                .await;
         }
     };
 }
@@ -276,7 +286,8 @@ macro_rules! with_class {
 
     ( $x:expr, $l:expr, $p:ident, $h:ty ) => {{
         unsafe {
-            static mut LOGGER: ::embassy_usb_logger::UsbLogger<$x, $h> = ::embassy_usb_logger::UsbLogger::new();
+            static mut LOGGER: ::embassy_usb_logger::UsbLogger<$x, $h> =
+                ::embassy_usb_logger::UsbLogger::new();
             LOGGER.with_handler(<$h>::new());
             let _ = ::log::set_logger_racy(&LOGGER).map(|()| log::set_max_level_racy($l));
             LOGGER.create_future_from_class($p)
