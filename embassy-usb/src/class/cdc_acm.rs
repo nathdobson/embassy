@@ -380,13 +380,15 @@ impl<'d> ControlChanged<'d> {
     pub async fn control_changed(&self) {
         self.control.changed().await;
     }
+    /// Gets the current line coding. The line coding contains information that's mainly relevant
+    /// for USB to UART serial port emulators, and can be ignored if not relevant.
     pub fn line_coding(&self) -> LineCoding {
         self.control.line_coding.lock(Cell::get)
     }
+    /// Gets the DTR (data terminal ready) state
     pub fn dtr(&self) -> bool {
         self.control.dtr.load(Ordering::Relaxed)
     }
-
     /// Gets the RTS (request to send) state
     pub fn rts(&self) -> bool {
         self.control.rts.load(Ordering::Relaxed)

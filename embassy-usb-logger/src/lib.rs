@@ -125,6 +125,7 @@ impl<const N: usize, T: ReceiverHandler + Send + Sync> UsbLogger<N, T> {
         }
     }
 
+    /// Run the logger with the specified sender and receiver.
     pub async fn run_logger_class<'d, D>(
         &self,
         sender: &mut Sender<'d, D>,
