@@ -4,6 +4,8 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+use core::fmt::{Display, Formatter};
+
 /// Direction of USB traffic. Note that in the USB standard the direction is always indicated from
 /// the perspective of the host, which is backward for devices, but the standard directions are used
 /// for consistency.
@@ -338,7 +340,12 @@ pub trait ControlPipe {
     ///
     /// Must be called after `setup()` for requests with `direction` of `Out`
     /// and `length` greater than zero.
-    async fn data_out(&mut self, buf: &mut [u8], first: bool, last: bool) -> Result<usize, EndpointError>;
+    async fn data_out(
+        &mut self,
+        buf: &mut [u8],
+        first: bool,
+        last: bool,
+    ) -> Result<usize, EndpointError>;
 
     /// Send a DATA IN packet with `data` in response to a control read request.
     ///
@@ -438,3 +445,14 @@ impl embedded_io_async::Error for EndpointError {
         }
     }
 }
+
+impl Display for EndpointError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            EndpointError::BufferOverflow => write!(f, "buffer overflow"),
+            EndpointError::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+impl core::error::Error for EndpointError {}
