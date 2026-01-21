@@ -37,9 +37,11 @@
 
 use core::cell::RefCell;
 
-use config::{ClocksConfig, FircConfig, FircFreqSel, Fro16KConfig, SircConfig};
+use config::{
+    ClocksConfig, FircConfig, FircFreqSel, Fro16KConfig, MainClockSource, SircConfig, VddDriveStrength, VddLevel,
+};
 use mcxa_pac::scg0::firccsr::{FircFclkPeriphEn, FircSclkPeriphEn, Fircsten};
-use mcxa_pac::scg0::sirccsr::{SircClkPeriphEn, Sircsten};
+use mcxa_pac::scg0::sirccsr::Sircsten;
 use periph_helpers::SPConfHelper;
 
 use crate::pac;
@@ -49,6 +51,18 @@ pub mod periph_helpers;
 //
 // Statics/Consts
 //
+
+// TODO: Different for different CPUs?
+const VDD_CORE_MID_DRIVE_WAIT_STATE_LIMITS: &[(u32, u8)] = &[(22_500_000, 0b0000)];
+const VDD_CORE_MID_DRIVE_MAX_WAIT_STATES: u8 = 0b0001;
+
+const VDD_CORE_OVER_DRIVE_WAIT_STATE_LIMITS: &[(u32, u8)] = &[
+    (40_000_000, 0b0000),
+    (80_000_000, 0b0001),
+    (120_000_000, 0b0010),
+    (160_000_000, 0b0011),
+];
+const VDD_CORE_OVER_DRIVE_MAX_WAIT_STATES: u8 = 0b0100;
 
 /// The state of system core clocks.
 ///
@@ -77,27 +91,34 @@ pub fn init(settings: ClocksConfig) -> Result<(), ClockError> {
     let mut operator = ClockOperator {
         clocks: &mut clocks,
         config: &settings,
+        sirc_forced: false,
 
         _mrcc0: unsafe { pac::Mrcc0::steal() },
         scg0: unsafe { pac::Scg0::steal() },
         syscon: unsafe { pac::Syscon::steal() },
         vbat0: unsafe { pac::Vbat0::steal() },
+        spc0: unsafe { pac::Spc0::steal() },
+        fmu0: unsafe { pac::Fmu0::steal() },
     };
 
+    // Before applying any requested clocks, apply the requested VDD_CORE
+    // voltage level
+    operator.configure_voltages()?;
+
+    // Enable SIRC clocks FIRST, in case we need to use SIRC as main_clk for
+    // a short while.
+    operator.configure_sirc_clocks_early()?;
     operator.configure_firc_clocks()?;
-    operator.configure_sirc_clocks()?;
     operator.configure_fro16k_clocks()?;
+    #[cfg(not(feature = "sosc-as-gpio"))]
     operator.configure_sosc()?;
     operator.configure_spll()?;
 
-    // For now, just use FIRC as the main/cpu clock, which should already be
-    // the case on reset
-    assert!(operator.scg0.rccr().read().scs().is_firc());
-    let input = operator.clocks.fro_hf_root.clone().unwrap();
-    operator.clocks.main_clk = Some(input.clone());
-    // We can also assume cpu/system clk == fro_hf because div is /1.
-    assert_eq!(operator.syscon.ahbclkdiv().read().div().bits(), 0);
-    operator.clocks.cpu_system_clk = Some(input);
+    // Finally, setup main clock
+    operator.configure_main_clk()?;
+
+    // If we were keeping SIRC enabled, now we can release it.
+    operator.configure_sirc_clocks_late();
 
     critical_section::with(|cs| {
         let mut clks = CLOCKS.borrow_ref_mut(cs);
@@ -137,8 +158,15 @@ pub fn with_clocks<R: 'static, F: FnOnce(&Clocks) -> R>(f: F) -> Option<R> {
 #[derive(Default, Debug, Clone)]
 #[non_exhaustive]
 pub struct Clocks {
+    /// Active power config
+    pub active_power: VddLevel,
+
+    /// Low-power power config
+    pub lp_power: VddLevel,
+
     /// The `clk_in` is a clock provided by an external oscillator
     /// AKA SOSC
+    #[cfg(not(feature = "sosc-as-gpio"))]
     pub clk_in: Option<Clock>,
 
     // FRO180M stuff
@@ -191,11 +219,11 @@ pub struct Clocks {
     /// the VDD Core domain, such as the OSTimer or LPUarts.
     pub clk_16k_vdd_core: Option<Clock>,
 
-    /// `main_clk` is the main clock used by the CPU, AHB, APB, IPS bus, and some
-    /// peripherals.
+    /// `main_clk` is the main clock, upstream of the cpu/system clock.
     pub main_clk: Option<Clock>,
 
-    /// `CPU_CLK` or `SYSTEM_CLK` is the output of `main_clk`, run through the `AHBCLKDIV`
+    /// `CPU_CLK` or `SYSTEM_CLK` is the output of `main_clk`, run through the `AHBCLKDIV`,
+    /// used for the CPU, AHB, APB, IPS bus, and some high speed peripherals.
     pub cpu_system_clk: Option<Clock>,
 
     /// `pll1_clk` is the output of the main system PLL, `pll1`.
@@ -265,11 +293,79 @@ struct ClockOperator<'a> {
     /// A reference to the requested configuration provided by the caller of [`init()`]
     config: &'a ClocksConfig,
 
+    /// SIRC is forced-on until we set `main_clk`
+    sirc_forced: bool,
+
     // We hold on to stolen peripherals
     _mrcc0: pac::Mrcc0,
     scg0: pac::Scg0,
     syscon: pac::Syscon,
     vbat0: pac::Vbat0,
+    spc0: pac::Spc0,
+    fmu0: pac::Fmu0,
+}
+
+// From Table 165 - Max Clock Frequencies
+struct ClockLimits {
+    fro_hf: u32,
+    fro_hf_div: u32,
+    pll1_clk: u32,
+    main_clk: u32,
+    cpu_clk: u32,
+    // The following items are LISTED in Table 165, but are not necessary
+    // to check at runtime either because they are physically fixed, the
+    // HAL exposes no way for them to exceed their limits, or they cannot
+    // exceed their limits due to some upstream clock enforcement. They
+    // are included here as documentation.
+    //
+    // clk_16k: u32,        // fixed (16.384kHz), no need to check
+    // clk_in: u32,         // Checked already in configure_sosc method, 50MHz in all modes
+    // clk_48m: u32,        // clk_48m is fixed (to 45mhz actually)
+    // fro_12m: u32,        // We don't allow modifying from 12mhz
+    // fro_12m_div: u32,    // div can never exceed 12mhz
+    // pll1_clk_div: u32,   // if pll1_clk is in range, so is pll1_clk_div
+    // clk_1m: u32,         // fro_12m / 12 can never exceed 12mhz
+    // system_clk: u32,     // cpu_clk == system_clk
+    // bus_clk: u32,        // bus_clk == (cpu_clk / 2), if cpu_clk is good so is bus_clk
+    // slow_clk: u32,       // slow_clk == (cpu_clk / 6), if cpu_clk is good so is slow_clock
+}
+
+impl ClockLimits {
+    const MID_DRIVE: Self = Self {
+        fro_hf: 90_000_000,
+        fro_hf_div: 45_000_000,
+        pll1_clk: 48_000_000,
+        main_clk: 90_000_000,
+        cpu_clk: 45_000_000,
+        // clk_16k: 16_384,
+        // clk_in: 50_000_000,
+        // clk_48m: 48_000_000,
+        // fro_12m: 24_000_000, // what?
+        // fro_12m_div: 24_000_000, // what?
+        // pll1_clk_div: 48_000_000,
+        // clk_1m: 1_000_000,
+        // system_clk: 45_000_000,
+        // bus_clk: 22_500_000,
+        // slow_clk: 7_500_000,
+    };
+
+    const OVER_DRIVE: Self = Self {
+        fro_hf: 180_000_000,
+        fro_hf_div: 180_000_000,
+        pll1_clk: 240_000_000,
+        main_clk: 180_000_000,
+        cpu_clk: 180_000_000,
+        // clk_16k: 16_384,
+        // clk_in: 50_000_000,
+        // clk_48m: 48_000_000,
+        // fro_12m: 24_000_000, // what?
+        // fro_12m_div: 24_000_000, // what?
+        // pll1_clk_div: 240_000_000,
+        // clk_1m: 1_000_000,
+        // system_clk: 180_000_000,
+        // bus_clk: 90_000_000,
+        // slow_clk: 36_000_000,
+    };
 }
 
 /// Trait describing an AHB clock gate that can be toggled through MRCC.
@@ -332,9 +428,11 @@ pub trait Gate {
 /// This peripheral must not yet be in use prior to calling `enable_and_reset`.
 #[inline]
 pub unsafe fn enable_and_reset<G: Gate>(cfg: &G::MrccPeriphConfig) -> Result<u32, ClockError> {
-    let freq = enable::<G>(cfg).inspect_err(|_| disable::<G>())?;
-    pulse_reset::<G>();
-    Ok(freq)
+    unsafe {
+        let freq = enable::<G>(cfg).inspect_err(|_| disable::<G>())?;
+        pulse_reset::<G>();
+        Ok(freq)
+    }
 }
 
 /// Enable the clock gate for the given peripheral.
@@ -347,19 +445,21 @@ pub unsafe fn enable_and_reset<G: Gate>(cfg: &G::MrccPeriphConfig) -> Result<u32
 /// This peripheral must not yet be in use prior to calling `enable`.
 #[inline]
 pub unsafe fn enable<G: Gate>(cfg: &G::MrccPeriphConfig) -> Result<u32, ClockError> {
-    G::enable_clock();
-    while !G::is_clock_enabled() {}
-    core::arch::asm!("dsb sy; isb sy", options(nomem, nostack, preserves_flags));
+    unsafe {
+        G::enable_clock();
+        while !G::is_clock_enabled() {}
+        core::arch::asm!("dsb sy; isb sy", options(nomem, nostack, preserves_flags));
 
-    let freq = critical_section::with(|cs| {
-        let clocks = CLOCKS.borrow_ref(cs);
-        let clocks = clocks.as_ref().ok_or(ClockError::NeverInitialized)?;
-        cfg.post_enable_config(clocks)
-    });
+        let freq = critical_section::with(|cs| {
+            let clocks = CLOCKS.borrow_ref(cs);
+            let clocks = clocks.as_ref().ok_or(ClockError::NeverInitialized)?;
+            cfg.post_enable_config(clocks)
+        });
 
-    freq.inspect_err(|_e| {
-        G::disable_clock();
-    })
+        freq.inspect_err(|_e| {
+            G::disable_clock();
+        })
+    }
 }
 
 /// Disable the clock gate for the given peripheral.
@@ -370,7 +470,9 @@ pub unsafe fn enable<G: Gate>(cfg: &G::MrccPeriphConfig) -> Result<u32, ClockErr
 #[allow(dead_code)]
 #[inline]
 pub unsafe fn disable<G: Gate>() {
-    G::disable_clock();
+    unsafe {
+        G::disable_clock();
+    }
 }
 
 /// Check whether a gate is currently enabled.
@@ -389,7 +491,9 @@ pub fn is_clock_enabled<G: Gate>() -> bool {
 /// This peripheral must not yet be in use prior to calling `release_reset`.
 #[inline]
 pub unsafe fn release_reset<G: Gate>() {
-    G::release_reset();
+    unsafe {
+        G::release_reset();
+    }
 }
 
 /// Assert a reset line for the given peripheral set.
@@ -401,7 +505,9 @@ pub unsafe fn release_reset<G: Gate>() {
 /// This peripheral must not yet be in use prior to calling `assert_reset`.
 #[inline]
 pub unsafe fn assert_reset<G: Gate>() {
-    G::assert_reset();
+    unsafe {
+        G::assert_reset();
+    }
 }
 
 /// Check whether the peripheral is held in reset.
@@ -423,10 +529,12 @@ pub unsafe fn is_reset_released<G: Gate>() -> bool {
 /// This peripheral must not yet be in use prior to calling `release_reset`.
 #[inline]
 pub unsafe fn pulse_reset<G: Gate>() {
-    G::assert_reset();
-    cortex_m::asm::nop();
-    cortex_m::asm::nop();
-    G::release_reset();
+    unsafe {
+        G::assert_reset();
+        cortex_m::asm::nop();
+        cortex_m::asm::nop();
+        G::release_reset();
+    }
 }
 
 //
@@ -479,6 +587,7 @@ impl Clocks {
     }
 
     /// Ensure the `clk_in` clock is active and valid at the given power state.
+    #[cfg(not(feature = "sosc-as-gpio"))]
     #[inline]
     pub fn ensure_clk_in_active(&self, at_level: &PoweredClock) -> Result<u32, ClockError> {
         self.ensure_clock_active(&self.clk_in, "clk_in", at_level)
@@ -570,55 +679,115 @@ impl PoweredClock {
 }
 
 impl ClockOperator<'_> {
+    fn active_limits(&self) -> &ClockLimits {
+        match self.config.vdd_power.active_mode.level {
+            VddLevel::MidDriveMode => &ClockLimits::MID_DRIVE,
+            VddLevel::OverDriveMode => &ClockLimits::OVER_DRIVE,
+        }
+    }
+
     /// Configure the FIRC/FRO180M clock family
     ///
     /// NOTE: Currently we require this to be a fairly hardcoded value, as this clock is used
     /// as the main clock used for the CPU, AHB, APB, etc.
     fn configure_firc_clocks(&mut self) -> Result<(), ClockError> {
-        const HARDCODED_ERR: Result<(), ClockError> = Err(ClockError::BadConfig {
-            clock: "firc",
-            reason: "For now, FIRC must be enabled and in default state!",
-        });
+        // Three options here:
+        //
+        // * Firc is disabled -> Switch main clock to SIRC and return
+        // * Firc is enabled and !default ->
+        //   * Switch main clock to SIRC
+        //   * Make FIRC changes
+        //   * Switch main clock back to FIRC
+        // * Firc is enabled and default -> nop
+        let is_default = self
+            .config
+            .firc
+            .as_ref()
+            .is_some_and(|c| matches!(c.frequency, FircFreqSel::Mhz45));
+
+        // If we are not default, then we need to switch to SIRC
+        if !is_default {
+            // Set SIRC (fro_12m) as the source
+            self.scg0.rccr().modify(|_r, w| w.scs().sirc());
+
+            // Wait for the change to complete
+            while self.scg0.csr().read().scs().is_sirc() {}
+        }
+
+        // Enable CSR writes
+        self.scg0.firccsr().modify(|_r, w| w.lk().write_enabled());
 
         // Did the user give us a FIRC config?
         let Some(firc) = self.config.firc.as_ref() else {
-            return HARDCODED_ERR;
+            // Nope, and we've already switched to fro_12m. Disable FIRC.
+            self.scg0.firccsr().modify(|_r, w| {
+                w.fircsten().disabled_in_stop_modes();
+                w.fircerr_ie().clear_bit();
+                w.fircen().disabled();
+                w
+            });
+
+            self.scg0.firccsr().modify(|_r, w| w.lk().write_disabled());
+            return Ok(());
         };
-        // Is the FIRC set to 45MHz (should be reset default)
-        if !matches!(firc.frequency, FircFreqSel::Mhz45) {
-            return HARDCODED_ERR;
+
+        // If we are here, we WANT FIRC. If we are !default, let's disable FIRC before
+        // we mess with it. If we are !default, we have already switched to SIRC instead!
+        if !is_default {
+            // Unlock
+            self.scg0.firccsr().modify(|_r, w| w.lk().write_enabled());
+
+            // Disable FIRC
+            self.scg0.firccsr().modify(|_r, w| {
+                w.fircen().disabled();
+                w.fircsten().disabled_in_stop_modes();
+                w.fircerr_ie().clear_bit();
+                w.fircacc_ie().clear_bit();
+                w.firc_sclk_periph_en().disabled();
+                w.firc_fclk_periph_en().disabled();
+                w
+            });
         }
-        let base_freq = 45_000_000;
 
-        // Now, check if the FIRC as expected for our hardcoded value
-        let mut firc_ok = true;
-
-        // Is the hardware currently set to the default 45MHz?
+        // Set frequency (if not the default 45MHz!), re-enable FIRC, and return the base frequency
         //
         // NOTE: the SVD currently has the wrong(?) values for these:
         // 45 -> 48
         // 60 -> 64
         // 90 -> 96
         // 180 -> 192
+        //
         // Probably correct-ish, but for a different trim value?
-        firc_ok &= self.scg0.firccfg().read().freq_sel().is_firc_48mhz_192s();
+        let base_freq = match firc.frequency {
+            FircFreqSel::Mhz45 => {
+                // We are default, there's nothing to do here.
+                45_000_000
+            }
+            FircFreqSel::Mhz60 => {
+                self.scg0.firccfg().modify(|_r, w| w.freq_sel().firc_64mhz());
+                self.scg0.firccsr().modify(|_r, w| w.fircen().enabled());
+                60_000_000
+            }
+            FircFreqSel::Mhz90 => {
+                self.scg0.firccfg().modify(|_r, w| w.freq_sel().firc_96mhz());
+                self.scg0.firccsr().modify(|_r, w| w.fircen().enabled());
+                90_000_000
+            }
+            FircFreqSel::Mhz180 => {
+                self.scg0.firccfg().modify(|_r, w| w.freq_sel().firc_192mhz());
+                self.scg0.firccsr().modify(|_r, w| w.fircen().enabled());
+                180_000_000
+            }
+        };
 
-        // Check some values in the CSR
-        let csr = self.scg0.firccsr().read();
-        // Is it enabled?
-        firc_ok &= csr.fircen().is_enabled();
-        // Is it accurate?
-        firc_ok &= csr.fircacc().is_enabled_and_valid();
-        // Is there no error?
-        firc_ok &= csr.fircerr().is_error_not_detected();
-        // Is the FIRC the system clock?
-        firc_ok &= csr.fircsel().is_firc();
-        // Is it valid?
-        firc_ok &= csr.fircvld().is_enabled_and_valid();
+        // Wait for FIRC to be enabled, error-free, and accurate
+        let mut firc_ok = false;
+        while !firc_ok {
+            let csr = self.scg0.firccsr().read();
 
-        // Are we happy with the current (hardcoded) state?
-        if !firc_ok {
-            return HARDCODED_ERR;
+            firc_ok = csr.fircen().is_enabled()
+                && csr.fircacc().is_enabled_and_valid()
+                && csr.fircerr().is_error_not_detected();
         }
 
         // Note that the fro_hf_root is active
@@ -644,6 +813,13 @@ impl ClockOperator<'_> {
 
         // Do we enable the `fro_hf` output?
         let fro_hf_set = if *fro_hf_enabled {
+            if base_freq > self.active_limits().fro_hf {
+                return Err(ClockError::BadConfig {
+                    clock: "fro_hf",
+                    reason: "exceeds max",
+                });
+            }
+
             self.clocks.fro_hf = Some(Clock {
                 frequency: base_freq,
                 power: *power,
@@ -671,6 +847,9 @@ impl ClockOperator<'_> {
             w
         });
 
+        // Last write to CSR, re-lock
+        self.scg0.firccsr().modify(|_r, w| w.lk().write_disabled());
+
         // Do we enable the `fro_hf_div` output?
         if let Some(d) = fro_hf_div.as_ref() {
             // We need `fro_hf` to be enabled
@@ -678,6 +857,14 @@ impl ClockOperator<'_> {
                 return Err(ClockError::BadConfig {
                     clock: "fro_hf_div",
                     reason: "fro_hf not enabled",
+                });
+            }
+
+            let div_freq = base_freq / d.into_divisor();
+            if div_freq > self.active_limits().fro_hf_div {
+                return Err(ClockError::BadConfig {
+                    clock: "fro_hf_root",
+                    reason: "exceeds max frequency",
                 });
             }
 
@@ -700,7 +887,7 @@ impl ClockOperator<'_> {
 
             // Store off the clock info
             self.clocks.fro_hf_div = Some(Clock {
-                frequency: base_freq / d.into_divisor(),
+                frequency: div_freq,
                 power: *power,
             });
         }
@@ -709,7 +896,7 @@ impl ClockOperator<'_> {
     }
 
     /// Configure the SIRC/FRO12M clock family
-    fn configure_sirc_clocks(&mut self) -> Result<(), ClockError> {
+    fn configure_sirc_clocks_early(&mut self) -> Result<(), ClockError> {
         let SircConfig {
             power,
             fro_12m_enabled,
@@ -728,24 +915,31 @@ impl ClockOperator<'_> {
             PoweredClock::NormalEnabledDeepSleepDisabled => Sircsten::Disabled,
             PoweredClock::AlwaysEnabled => Sircsten::Enabled,
         };
-        let pclk = if *fro_12m_enabled {
+
+        // clk_1m is *before* the fro_12m clock gate
+        self.clocks.clk_1m = Some(Clock {
+            frequency: base_freq / 12,
+            power: *power,
+        });
+
+        // If the user wants fro_12m to be disabled, FOR now, we ignore their
+        // wish to ensure fro_12m is selectable as a main_clk source at least until
+        // we select the CPU clock. We still mark it as not enabled though, to prevent
+        // other peripherals using it, as we will gate if off at `configure_sirc_clocks_late`.
+        if *fro_12m_enabled {
             self.clocks.fro_12m = Some(Clock {
                 frequency: base_freq,
                 power: *power,
             });
-            self.clocks.clk_1m = Some(Clock {
-                frequency: base_freq / 12,
-                power: *power,
-            });
-            SircClkPeriphEn::Enabled
         } else {
-            SircClkPeriphEn::Disabled
+            self.sirc_forced = true;
         };
 
         // Set sleep/peripheral usage
         self.scg0.sirccsr().modify(|_r, w| {
             w.sircsten().variant(deep);
-            w.sirc_clk_periph_en().variant(pclk);
+            // Always on, for now at least! Will be resolved in `configure_sirc_clocks_late`
+            w.sirc_clk_periph_en().enabled();
             w
         });
 
@@ -795,6 +989,20 @@ impl ClockOperator<'_> {
         }
 
         Ok(())
+    }
+
+    fn configure_sirc_clocks_late(&mut self) {
+        // If we forced SIRC's fro_12m to be enabled, disable it now.
+        if self.sirc_forced {
+            // Allow writes
+            self.scg0.sirccsr().modify(|_r, w| w.lk().write_enabled());
+
+            // Disable clk_12m
+            self.scg0.sirccsr().modify(|_r, w| w.sirc_clk_periph_en().disabled());
+
+            // reset lock
+            self.scg0.sirccsr().modify(|_r, w| w.lk().write_disabled());
+        }
     }
 
     /// Configure the ROSC/FRO16K/clk_16k clock family
@@ -855,6 +1063,7 @@ impl ClockOperator<'_> {
     }
 
     /// Configure the SOSC/clk_in oscillator
+    #[cfg(not(feature = "sosc-as-gpio"))]
     fn configure_sosc(&mut self) -> Result<(), ClockError> {
         let Some(parts) = self.config.sosc.as_ref() else {
             return Ok(());
@@ -863,8 +1072,6 @@ impl ClockOperator<'_> {
         // Enable (and wait for) LDO to be active
         self.ensure_ldo_active();
 
-        // TODO: something something pins? This seems to work when the pins are
-        // not enabled, even if GPIO hasn't been initialized at all yet.
         let eref = match parts.mode {
             config::SoscMode::CrystalOscillator => pac::scg0::sosccfg::Erefs::Internal,
             config::SoscMode::ActiveClock => pac::scg0::sosccfg::Erefs::External,
@@ -983,6 +1190,7 @@ impl ClockOperator<'_> {
 
         // match on the source, ensure it is active already
         let res = match cfg.source {
+            #[cfg(not(feature = "sosc-as-gpio"))]
             config::SpllSource::Sosc => self
                 .clocks
                 .clk_in
@@ -1171,11 +1379,15 @@ impl ClockOperator<'_> {
             });
         }
 
-        // TODO: Different for different CPUs?
-        const CPU_MAX_FREQ: u32 = 180_000_000;
-
         // Fout: 4.3MHz to 2x Max CPU Frequency
-        if !(4_300_000..=(2 * CPU_MAX_FREQ)).contains(&fout) {
+        let fmax = match self.config.vdd_power.active_mode.level {
+            VddLevel::MidDriveMode => ClockLimits::MID_DRIVE.cpu_clk,
+            VddLevel::OverDriveMode => ClockLimits::OVER_DRIVE.cpu_clk,
+        };
+        let spll_range_bad1 = !(4_300_000..=(2 * fmax)).contains(&fout);
+        let spll_range_bad2 = fout > self.active_limits().pll1_clk;
+
+        if spll_range_bad1 || spll_range_bad2 {
             return Err(ClockError::BadConfig {
                 clock: "spll",
                 reason: "fout invalid",
@@ -1316,6 +1528,252 @@ impl ClockOperator<'_> {
 
         Ok(())
     }
+
+    fn configure_main_clk(&mut self) -> Result<(), ClockError> {
+        use pac::scg0::csr::Scs as ScsR;
+        use pac::scg0::rccr::Scs as ScsW;
+
+        let (var, name, clk) = match self.config.main_clock.source {
+            #[cfg(not(feature = "sosc-as-gpio"))]
+            MainClockSource::SoscClkIn => (ScsW::Sosc, "clk_in", self.clocks.clk_in.as_ref()),
+            MainClockSource::SircFro12M => (ScsW::Sirc, "fro_12m", self.clocks.fro_12m.as_ref()),
+            MainClockSource::FircHfRoot => (ScsW::Firc, "fro_hf_root", self.clocks.fro_hf_root.as_ref()),
+            MainClockSource::RoscFro16K => (ScsW::Rosc, "fro16k", self.clocks.clk_16k_vdd_core.as_ref()),
+            MainClockSource::SPll1 => (ScsW::Spll, "pll1_clk", self.clocks.pll1_clk.as_ref()),
+        };
+        let Some(main_clk_src) = clk else {
+            return Err(ClockError::BadConfig {
+                clock: name,
+                reason: "Needed for main_clock but not enabled",
+            });
+        };
+
+        if !main_clk_src.power.meets_requirement_of(&self.config.main_clock.power) {
+            return Err(ClockError::BadConfig {
+                clock: name,
+                reason: "Needed for main_clock but not low power",
+            });
+        }
+
+        let (levels, mclk_max, cpuclk_max, wsmax) = match self.config.vdd_power.active_mode.level {
+            VddLevel::MidDriveMode => (
+                VDD_CORE_MID_DRIVE_WAIT_STATE_LIMITS,
+                ClockLimits::MID_DRIVE.main_clk,
+                ClockLimits::MID_DRIVE.cpu_clk,
+                VDD_CORE_MID_DRIVE_MAX_WAIT_STATES,
+            ),
+            VddLevel::OverDriveMode => (
+                VDD_CORE_OVER_DRIVE_WAIT_STATE_LIMITS,
+                ClockLimits::OVER_DRIVE.main_clk,
+                ClockLimits::OVER_DRIVE.cpu_clk,
+                VDD_CORE_OVER_DRIVE_MAX_WAIT_STATES,
+            ),
+        };
+
+        // Is the main_clk source in range for main_clk?
+        if main_clk_src.frequency > mclk_max {
+            return Err(ClockError::BadConfig {
+                clock: name,
+                reason: "Exceeds main_clock frequency",
+            });
+        }
+
+        // Calculate expected CPU frequency based on main_clk and AHB div
+        let ahb_div = self.config.main_clock.ahb_clk_div;
+        let cpu_freq = main_clk_src.frequency / ahb_div.into_divisor();
+
+        // Is the expected CPU frequency in range for cpu_clk?
+        if cpu_freq > cpuclk_max {
+            return Err(ClockError::BadConfig {
+                clock: name,
+                reason: "Exceeds ahb max frequency",
+            });
+        }
+
+        // BEFORE we switch, update the flash wait states to the appropriate levels
+        //
+        // NOTE: "cpu_clk" is the same as "system_clk". Table 22 is not clear exactly
+        // WHICH source clock the limits apply to, but system/ahb/cpu is a fair bet.
+        //
+        // TODO: This calculation doesn't consider low power mode yet!
+        let wait_states = levels
+            .iter()
+            .find(|(fmax, _ws)| cpu_freq <= *fmax)
+            .map(|t| t.1)
+            .unwrap_or(wsmax);
+        self.fmu0.fctrl().modify(|_r, w| unsafe { w.rwsc().bits(wait_states) });
+
+        // Now we can switch clock source, if necessary.
+        let expected = match var {
+            ScsW::Sosc => ScsR::Sosc,
+            ScsW::Sirc => ScsR::Sirc,
+            ScsW::Firc => ScsR::Firc,
+            ScsW::Rosc => ScsR::Rosc,
+            ScsW::Spll => ScsR::Spll,
+        };
+
+        // TODO: (Double) check if clock is actually valid before switching?
+        // Are we already on the right clock?
+        let now = self.scg0.csr().read().scs();
+        if now != expected {
+            // Set RCCR
+            self.scg0.rccr().modify(|_r, w| w.scs().variant(var));
+
+            // Wait for match
+            while self.scg0.csr().read().scs() != expected {}
+        }
+
+        // The main_clk is now set to the selected input clock
+        self.clocks.main_clk = Some(main_clk_src.clone());
+
+        // Update AHB clock division, if necessary
+        if ahb_div.into_bits() != 0 {
+            // AHB has no halt/reset fields - it's different to other DIV8s!
+            self.syscon
+                .ahbclkdiv()
+                .modify(|_r, w| unsafe { w.div().bits(ahb_div.into_bits()) });
+            // Wait for clock to stabilize
+            while self.syscon.ahbclkdiv().read().unstab().is_ongoing() {}
+        }
+
+        // Store off the clock info
+        self.clocks.cpu_system_clk = Some(Clock {
+            frequency: cpu_freq,
+            power: main_clk_src.power,
+        });
+
+        Ok(())
+    }
+
+    fn configure_voltages(&mut self) -> Result<(), ClockError> {
+        match self.config.vdd_power.active_mode.level {
+            VddLevel::MidDriveMode => {
+                // This is the default mode, I don't believe we need to do anything.
+                //
+                // "The LVDE and HVDE fields reset only with a POR.
+                // All other fields reset only with a system reset."
+            }
+            VddLevel::OverDriveMode => {
+                // You can change the core VDD levels for the LDO_CORE low power regulator only
+                // when CORELDO_VDD_DS=1.
+                //
+                // When switching CORELDO_VDD_DS from low to normal drive strength, ensure the LDO_CORE high
+                // VDD LVL setting is set to the same level that was set prior to switching to the LDO_CORE drive strength
+                // (CORELDO_VDD_DS). Otherwise, if the LVDs are enabled, an unexpected LVD can occur.
+                //
+                // Ensure drive strength is normal (BEFORE shifting level)
+                self.spc0.active_cfg().modify(|_r, w| w.coreldo_vdd_ds().normal());
+
+                // ## DS 26.3.2:
+                //
+                // When increasing voltage and frequency in Active mode, you must perform the following steps:
+                //
+                // 1. Increase voltage to a new level (ACTIVE_CFG[CORELDO_VDD_LVL]).
+                self.spc0.active_cfg().modify(|_r, w| w.coreldo_vdd_lvl().over());
+
+                // 2. Wait for voltage change to complete (SC[BUSY] = 0).
+                while self.spc0.sc().read().busy().is_busy_yes() {}
+
+                // 3. Configure flash memory to support higher voltage level and frequency (FMU_FCTRL[RWSC].
+                //
+                // NOTE: This step skipped - we will update RWSC when we later apply main cpu clock
+                // frequency changes.
+
+                // 4. Configure SRAM to support higher voltage levels (SRAMCTL[VSM]).
+                // TODO(AJM): The refman describes `0b01` as "1.0v", and `0b10` as `1.1v`, with
+                // all other patterns reserved. Is this correct for 1.2v overdrive?
+                self.spc0.sramctl().modify(|_r, w| w.vsm().vsm2());
+
+                // 5. Request SRAM voltage update (write 1 to SRAMCTL[REQ]).
+                self.spc0.sramctl().modify(|_r, w| w.req().set_bit());
+
+                // 6. Wait for SRAM voltage change to complete (SRAMCTL[ACK] = 1).
+                while self.spc0.sramctl().read().ack().is_ack_no() {}
+
+                // 7. Clear request for SRAM voltage change (write 0 to SRAMCTL[REQ]).
+                self.spc0.sramctl().modify(|_r, w| w.req().clear_bit());
+
+                // 8. Increase frequency to a new level (for example, SCG_RCCR).
+                //
+                // NOTE: This step skipped - we will update RCCR when we later apply main cpu clock
+                // frequency changes.
+
+                // 9. You can continue execution.
+                // :)
+            }
+        }
+
+        // If the CORELDO_VDD_DS fields are set to the same value in both the ACTIVE_CFG and LP_CFG registers,
+        // the CORELDO_VDD_LVL's in the ACTIVE_CFG and LP_CFG register must be set to the same voltage
+        // level settings.
+        //
+        // TODO(AJM): I don't really understand this! Enforce it literally for now I guess.
+        let ds_match = self.config.vdd_power.active_mode.drive == self.config.vdd_power.low_power_mode.drive;
+        let vdd_match = self.config.vdd_power.active_mode.level == self.config.vdd_power.low_power_mode.level;
+
+        if ds_match && !vdd_match {
+            return Err(ClockError::BadConfig {
+                clock: "vdd_power",
+                reason: "DS matches but LVL mismatches!",
+            });
+        }
+
+        // You can change the core VDD levels for the LDO_CORE low power regulator only when
+        // ACTIVE_CFG[CORELDO_VDD_DS] = 1. So, before entering any of the low-power states (DSLEEP,
+        // PDOWN, DPDOWN) with LDO_CORE low power regulator selected (LP_CFG[CORELDO_VDD_DS] = 0),
+        // you must use CORELDO_VDD_LVL to select the correct regulation level during ACTIVE run mode.
+        //
+        // NOTE(AJM): We've set drive strength to "normal" above, and do not (potentially) set it to
+        // "low" until later below.
+
+        // NOTE(AJM): The reference manual doesn't have any similar configuration requirements
+        // for low power mode. We'll just configure it, I guess?
+        //
+        // NOTE(AJM): "LP_CFG: This register resets only after a POR or LVD event."
+        let ds = match self.config.vdd_power.low_power_mode.drive {
+            VddDriveStrength::Low => pac::spc0::lp_cfg::CoreldoVddDs::Low,
+            VddDriveStrength::Normal => {
+                // "If you specify normal drive strength, you must write a value to LP[BGMODE] that enables the bandgap."
+                //
+                // Bandgap enabled, buffer disabled
+                self.spc0.lp_cfg().modify(|_r, w| w.bgmode().bgmode01());
+
+                pac::spc0::lp_cfg::CoreldoVddDs::Normal
+            }
+        };
+        let lvl = match self.config.vdd_power.low_power_mode.level {
+            VddLevel::MidDriveMode => pac::spc0::lp_cfg::CoreldoVddLvl::Mid,
+            VddLevel::OverDriveMode => pac::spc0::lp_cfg::CoreldoVddLvl::Over,
+        };
+        self.spc0.lp_cfg().modify(|_r, w| w.coreldo_vdd_ds().variant(ds));
+        self.spc0.lp_cfg().modify(|_r, w| w.coreldo_vdd_lvl().variant(lvl));
+
+        // Updating CORELDO_VDD_LVL sets the SC[BUSY] flag. That flag remains set for at least the total time
+        // delay that Active Voltage Trim Delay (ACTIVE_VDELAY) specifies.
+        //
+        // Before changing CORELDO_VDD_LVL, you must wait until the SC[BUSY] flag clears before entering the
+        // selected low-power sleep
+        //
+        // NOTE(AJM): Let's just proactively wait now so we don't have to worry about it on subsequent sleeps
+        while self.spc0.sc().read().busy().is_busy_yes() {}
+
+        // NOTE(AJM): I don't really know if this is valid! I'm guessing in most cases you would want to
+        // use the low drive strength for lp mode, and high drive strength for active mode?
+        match self.config.vdd_power.active_mode.drive {
+            VddDriveStrength::Low => {
+                self.spc0.active_cfg().modify(|_r, w| w.coreldo_vdd_ds().low());
+            }
+            VddDriveStrength::Normal => {
+                // Already set to normal above
+            }
+        }
+
+        // Update status
+        self.clocks.active_power = self.config.vdd_power.active_mode.level;
+        self.clocks.lp_power = self.config.vdd_power.low_power_mode.level;
+
+        Ok(())
+    }
 }
 
 //
@@ -1371,9 +1829,7 @@ macro_rules! impl_cc_gate {
 /// This module contains implementations of MRCC APIs, specifically of the [`Gate`] trait,
 /// for various low level peripherals.
 pub(crate) mod gate {
-    #[cfg(not(feature = "time"))]
-    use super::periph_helpers::OsTimerConfig;
-    use super::periph_helpers::{AdcConfig, Lpi2cConfig, LpuartConfig, NoConfig};
+    use super::periph_helpers::{AdcConfig, I3cConfig, Lpi2cConfig, LpuartConfig, NoConfig, OsTimerConfig};
     use super::*;
 
     // These peripherals have no additional upstream clocks or configuration required
@@ -1396,9 +1852,6 @@ pub(crate) mod gate {
 
     // These peripherals DO have meaningful configuration, and could fail if the system
     // clocks do not match their needs.
-    #[cfg(not(feature = "time"))]
-    impl_cc_gate!(OSTIMER0, mrcc_glb_cc1, mrcc_glb_rst1, ostimer0, OsTimerConfig);
-
     impl_cc_gate!(LPI2C0, mrcc_glb_cc0, mrcc_glb_rst0, lpi2c0, Lpi2cConfig);
     impl_cc_gate!(LPI2C1, mrcc_glb_cc0, mrcc_glb_rst0, lpi2c1, Lpi2cConfig);
     impl_cc_gate!(LPI2C2, mrcc_glb_cc1, mrcc_glb_rst1, lpi2c2, Lpi2cConfig);
@@ -1414,6 +1867,9 @@ pub(crate) mod gate {
     impl_cc_gate!(ADC1, mrcc_glb_cc1, mrcc_glb_rst1, adc1, AdcConfig);
     impl_cc_gate!(ADC2, mrcc_glb_cc1, mrcc_glb_rst1, adc2, AdcConfig);
     impl_cc_gate!(ADC3, mrcc_glb_cc1, mrcc_glb_rst1, adc3, AdcConfig);
+    impl_cc_gate!(I3C0, mrcc_glb_cc0, mrcc_glb_rst0, i3c0, I3cConfig);
+
+    impl_cc_gate!(OSTIMER0, mrcc_glb_cc1, mrcc_glb_rst1, ostimer0, OsTimerConfig);
 
     // DMA0 peripheral - uses NoConfig since it has no selectable clock source
     impl_cc_gate!(DMA0, mrcc_glb_cc0, mrcc_glb_rst0, dma0, NoConfig);

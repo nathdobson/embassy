@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     let mut singletons = get_singletons(cfgs);
 
     time_driver(&mut singletons, cfgs);
+    pin_features(&mut singletons);
 
     let mut g = TokenStream::new();
 
@@ -257,6 +258,7 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
 struct Singleton {
     name: String,
 
+    /// `#[cfg]` guard which enables this singleton instance to be obtained.
     cfg: Option<TokenStream>,
 }
 
@@ -323,26 +325,13 @@ fn get_singletons(cfgs: &mut common::CfgSet) -> Vec<Singleton> {
             });
         }
 
-        let mut signals = BTreeSet::new();
-
-        // Pick out each unique signal. There may be multiple instances of each signal due to
-        // iomux mappings.
-        for pin in peripheral.pins {
-            let signal = if peripheral.name.starts_with("GPIO")
-                || peripheral.name.starts_with("VREF")
-                || peripheral.name.starts_with("RTC")
-            {
-                pin.signal.to_string()
-            } else {
-                format!("{}_{}", peripheral.name, pin.signal)
-            };
-
-            // We need to rename some signals to become valid Rust identifiers.
-            let signal = make_valid_identifier(&signal);
-            signals.insert(signal);
+        // Generate each GPIO pin singleton
+        if peripheral.name.starts_with("GPIO") {
+            for pin in peripheral.pins {
+                let singleton = make_valid_identifier(&pin.signal);
+                singletons.push(singleton);
+            }
         }
-
-        singletons.extend(signals);
     }
 
     // DMA channels get their own singletons
@@ -508,8 +497,41 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     }
 }
 
+fn pin_features(singletons: &mut Vec<Singleton>) {
+    let sysctl = METADATA
+        .peripherals
+        .iter()
+        .find(|p| p.name == "SYSCTL")
+        .expect("no SYSCTL peripheral");
+
+    // Some packages make NRST share a physical pin with a GPIO.
+    if let Some(pin) = sysctl.pins.iter().find(|p| p.signal == "NRST" && p.pin != "NRST") {
+        let pin = singletons
+            .iter_mut()
+            .find(|s| s.name == pin.pin)
+            .expect("Could not find NRST pin to cfg gate");
+
+        pin.cfg = Some(quote! { #[cfg(feature = "nrst-pin-as-gpio")] });
+    }
+
+    let debugss = METADATA
+        .peripherals
+        .iter()
+        .find(|p| p.name == "DEBUGSS")
+        .expect("Could not find DEBUGSS peripheral");
+
+    for pin in debugss.pins.iter() {
+        let pin = singletons
+            .iter_mut()
+            .find(|s| s.name == pin.pin)
+            .expect("Could not find SWD pin to cfg gate");
+
+        pin.cfg = Some(quote! { #[cfg(feature = "swd-pins-as-gpio")] });
+    }
+}
+
 fn generate_singletons(singletons: &[Singleton]) -> TokenStream {
-    let singletons = singletons
+    let singletons_peripherals_struct = singletons
         .iter()
         .map(|s| {
             let cfg = s.cfg.clone().unwrap_or_default();
@@ -523,9 +545,20 @@ fn generate_singletons(singletons: &[Singleton]) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
+    let singletons_peripherals_def = singletons
+        .iter()
+        .map(|s| {
+            let ident = format_ident!("{}", s.name);
+
+            quote! {
+                #ident
+            }
+        })
+        .collect::<Vec<_>>();
+
     quote! {
-        embassy_hal_internal::peripherals_definition!(#(#singletons),*);
-        embassy_hal_internal::peripherals_struct!(#(#singletons),*);
+        embassy_hal_internal::peripherals_definition!(#(#singletons_peripherals_def),*);
+        embassy_hal_internal::peripherals_struct!(#(#singletons_peripherals_struct),*);
     }
 }
 

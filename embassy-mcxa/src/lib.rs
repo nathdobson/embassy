@@ -10,16 +10,18 @@ pub mod dma;
 pub mod gpio;
 
 pub mod adc;
+pub mod cdog;
 pub mod clkout;
 pub mod config;
 pub mod crc;
 pub mod i2c;
-pub mod interrupt;
+pub mod i3c;
 pub mod lpuart;
 pub mod ostimer;
 pub mod reset_reason;
 pub mod rtc;
 pub mod trng;
+pub mod wwdt;
 
 use crate::interrupt::InterruptExt;
 pub use crate::pac::NVIC_PRIO_BITS;
@@ -108,16 +110,24 @@ embassy_hal_internal::peripherals!(
     MBC0,
     MRCC0,
     OPAMP0,
-
-    #[cfg(not(feature = "time"))]
     OSTIMER0,
 
+    // Normally SWDIO!
+    #[cfg(feature = "swd-as-gpio")]
     P0_0,
+    // Normally SWCLK!
+    #[cfg(feature = "swd-as-gpio")]
     P0_1,
+    // Normally SWO!
+    #[cfg(feature = "swd-swo-as-gpio")]
     P0_2,
+    // Normally JTAG TDI!
+    #[cfg(feature = "jtag-extras-as-gpio")]
     P0_3,
     P0_4,
     P0_5,
+    // Normally JTAG ISPMODE_N!
+    #[cfg(feature = "jtag-extras-as-gpio")]
     P0_6,
     P0_7,
     P0_8,
@@ -174,19 +184,12 @@ embassy_hal_internal::peripherals!(
     P1_26,
     P1_27,
     P1_28,
+    #[cfg(feature = "dangerous-reset-as-gpio")]
     P1_29,
-    // TODO: These pins are optionally used as the clock sources for SOSC.
-    // Ideally, we'd want to have a custom version of the `peripheral!` macro
-    // that presented these as `Option<Peri<'_, P1_30>>` instead of `Peri<'_, P1_30>`
-    // when the user DOES enable the external SOSC. For now, I'm guessing MOST designs
-    // will have an external clock sitting on these pins anyway, so we just notch them
-    // out from the `Peripherals` struct given to users.
-    //
-    // If you find this and want your extra two pins to be available: please open an
-    // embassy issue to discuss how we could do this.
-    //
-    // P1_30,
-    // P1_31,
+    #[cfg(feature = "sosc-as-gpio")]
+    P1_30,
+    #[cfg(feature = "sosc-as-gpio")]
+    P1_31,
 
     P2_0,
     P2_1,
@@ -347,13 +350,97 @@ embassy_hal_internal::peripherals!(
     WWDT0,
 );
 
-// See commented out items above to understand why we create the instances
-// here but don't give them to the user.
-pub(crate) mod internal_peripherals {
-    embassy_hal_internal::peripherals_definition!(P1_30, P1_31,);
-
-    pub(crate) use peripherals::*;
-}
+embassy_hal_internal::interrupt_mod!(
+    ADC0,
+    ADC1,
+    ADC2,
+    ADC3,
+    CAN0,
+    CAN1,
+    CDOG0,
+    CDOG1,
+    CMC,
+    CMP0,
+    CMP1,
+    CMP2,
+    CTIMER0,
+    CTIMER1,
+    CTIMER2,
+    CTIMER3,
+    CTIMER4,
+    DAC0,
+    DMA_CH0,
+    DMA_CH1,
+    DMA_CH2,
+    DMA_CH3,
+    DMA_CH4,
+    DMA_CH5,
+    DMA_CH6,
+    DMA_CH7,
+    EQDC0_COMPARE,
+    EQDC0_HOME,
+    EQDC0_INDEX,
+    EQDC0_WATCHDOG,
+    EQDC1_COMPARE,
+    EQDC1_HOME,
+    EQDC1_INDEX,
+    EQDC1_WATCHDOG,
+    ERM0_MULTI_BIT,
+    ERM0_SINGLE_BIT,
+    FLEXIO,
+    FLEXPWM0_FAULT,
+    FLEXPWM0_RELOAD_ERROR,
+    FLEXPWM0_SUBMODULE0,
+    FLEXPWM0_SUBMODULE1,
+    FLEXPWM0_SUBMODULE2,
+    FLEXPWM0_SUBMODULE3,
+    FLEXPWM1_FAULT,
+    FLEXPWM1_RELOAD_ERROR,
+    FLEXPWM1_SUBMODULE0,
+    FLEXPWM1_SUBMODULE1,
+    FLEXPWM1_SUBMODULE2,
+    FLEXPWM1_SUBMODULE3,
+    FMU0,
+    FREQME0,
+    GLIKEY0,
+    GPIO0,
+    GPIO1,
+    GPIO2,
+    GPIO3,
+    GPIO4,
+    I3C0,
+    LPI2C0,
+    LPI2C1,
+    LPI2C2,
+    LPI2C3,
+    LPSPI0,
+    LPSPI1,
+    LPTMR0,
+    LPUART0,
+    LPUART1,
+    LPUART2,
+    LPUART3,
+    LPUART4,
+    LPUART5,
+    MAU,
+    MBC0,
+    OS_EVENT,
+    PKC,
+    RTC,
+    RTC_1HZ,
+    SCG0,
+    SGI,
+    SLCD,
+    SMARTDMA,
+    SPC0,
+    TDET,
+    TRNG0,
+    USB0,
+    UTICK0,
+    WAKETIMER0,
+    WUU0,
+    WWDT0,
+);
 
 // Use cortex-m-rt's #[interrupt] attribute directly; PAC does not re-export it.
 
@@ -366,25 +453,23 @@ pub(crate) use mcxa_pac as pac;
 /// Initialize HAL with configuration (mirrors embassy-imxrt style). Minimal: just take peripherals.
 /// Also applies configurable NVIC priority for the OSTIMER OS_EVENT interrupt (no enabling).
 pub fn init(cfg: crate::config::Config) -> Peripherals {
-    let peripherals = Peripherals::take();
-    // Apply user-configured priority early; enabling is left to examples/apps
-    #[cfg(feature = "time")]
-    crate::interrupt::OS_EVENT.set_priority(cfg.time_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
+    // Might not need to be mutable if none of the `...-as-gpio` features are active.
+    #[allow(unused_mut)]
+    let mut peripherals = Peripherals::take();
+
     crate::interrupt::RTC.set_priority(cfg.rtc_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
     crate::interrupt::GPIO0.set_priority(cfg.gpio_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
     crate::interrupt::GPIO1.set_priority(cfg.gpio_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
     crate::interrupt::GPIO2.set_priority(cfg.gpio_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
     crate::interrupt::GPIO3.set_priority(cfg.gpio_interrupt_priority);
-    // Apply user-configured priority early; enabling is left to examples/apps
     crate::interrupt::GPIO4.set_priority(cfg.gpio_interrupt_priority);
 
     // Configure clocks
     crate::clocks::init(cfg.clock_cfg).unwrap();
+
+    // Initialize embassy-time global driver backed by OSTIMER0
+    // NOTE: As early as possible, but MUST be AFTER clocks!
+    crate::ostimer::init(cfg.time_interrupt_priority);
 
     unsafe {
         crate::gpio::interrupt_init();
@@ -392,10 +477,6 @@ pub fn init(cfg: crate::config::Config) -> Peripherals {
 
     // Initialize DMA controller (clock, reset, configuration)
     crate::dma::init();
-
-    // Initialize embassy-time global driver backed by OSTIMER0
-    #[cfg(feature = "time")]
-    crate::ostimer::time_driver::init(crate::config::Config::default().time_interrupt_priority, 1_000_000);
 
     // Enable GPIO clocks
     unsafe {
@@ -413,6 +494,27 @@ pub fn init(cfg: crate::config::Config) -> Peripherals {
 
         _ = crate::clocks::enable_and_reset::<crate::peripherals::PORT4>(&crate::clocks::periph_helpers::NoConfig);
         _ = crate::clocks::enable_and_reset::<crate::peripherals::GPIO4>(&crate::clocks::periph_helpers::NoConfig);
+    }
+
+    // If we are not using SWD pins for SWD reasons, make them floating inputs
+    #[cfg(feature = "swd-as-gpio")]
+    {
+        let _swdio = gpio::Input::new(peripherals.P0_0.reborrow(), gpio::Pull::Disabled);
+        let _swclk = gpio::Input::new(peripherals.P0_1.reborrow(), gpio::Pull::Disabled);
+    }
+    #[cfg(feature = "swd-swo-as-gpio")]
+    {
+        let _swo = gpio::Input::new(peripherals.P0_2.reborrow(), gpio::Pull::Disabled);
+    }
+    #[cfg(feature = "jtag-extras-as-gpio")]
+    {
+        let _tdi = gpio::Input::new(peripherals.P0_3.reborrow(), gpio::Pull::Disabled);
+        let _imn = gpio::Input::new(peripherals.P0_6.reborrow(), gpio::Pull::Disabled);
+    }
+    #[cfg(feature = "dangerous-reset-as-gpio")]
+    {
+        // DANGER DANGER DANGER
+        let _rst = gpio::Input::new(peripherals.P0_29.reborrow(), gpio::Pull::Disabled);
     }
 
     peripherals
@@ -440,7 +542,7 @@ macro_rules! bind_interrupts {
 
         $(
             #[allow(non_snake_case)]
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             $(#[cfg($cond_irq)])?
             unsafe extern "C" fn $irq() {
                 unsafe {
