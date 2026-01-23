@@ -5,7 +5,6 @@
 #![deny(unused_must_use)]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
-#![feature(generic_arg_infer)]
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
 
