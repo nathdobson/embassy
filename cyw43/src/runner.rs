@@ -711,7 +711,7 @@ where
                 if cdc_header.id == self.ioctl_id {
                     if cdc_header.status != 0 {
                         // TODO: propagate error instead
-                        panic!("IOCTL error {}", cdc_header.status as i32);
+                        error!("IOCTL error {}", cdc_header.status as i32);
                     }
 
                     self.ioctl_state.ioctl_done(response);
