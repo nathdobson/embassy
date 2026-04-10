@@ -419,6 +419,8 @@ impl<'d> ControlChanged<'d> {
     pub fn rts(&self) -> bool {
         self.control.rts.load(Ordering::Relaxed)
     }
+
+
 }
 
 /// CDC ACM class packet sender.

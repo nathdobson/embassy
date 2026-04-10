@@ -1,5 +1,7 @@
 use stm32_metapac::flash::vals::Latency;
 
+#[cfg(all(any(stm32f4, stm32f7), ltdc))]
+use crate::ltdc::LcdClockDiv;
 #[cfg(any(stm32f4, stm32f7))]
 use crate::pac::PWR;
 #[cfg(any(stm32f413, stm32f423, stm32f412))]
@@ -9,6 +11,10 @@ pub use crate::pac::rcc::vals::{
     Pllsrc as PllSource, Ppre as APBPrescaler, Sw as Sysclk,
 };
 use crate::pac::{FLASH, RCC};
+#[cfg(dsihost)]
+use crate::rcc::dsi;
+#[cfg(dsihost)]
+pub use crate::rcc::dsi::{DsiHostPllConfig, DsiPllInput, DsiPllNdiv, DsiPllOutput};
 use crate::time::Hertz;
 
 // TODO: on some F4s, PLLM is shared between all PLLs. Enforce that.
@@ -99,6 +105,12 @@ pub struct Config {
     pub apb1_pre: APBPrescaler,
     pub apb2_pre: APBPrescaler,
 
+    #[cfg(dsihost)]
+    pub dsi: Option<DsiHostPllConfig>,
+
+    #[cfg(all(any(stm32f4, stm32f7), ltdc))]
+    pub lcd_div: Option<LcdClockDiv>,
+
     pub ls: super::LsConfig,
 
     /// Per-peripheral kernel clock selection muxes
@@ -126,6 +138,12 @@ impl Config {
             ahb_pre: AHBPrescaler::DIV1,
             apb1_pre: APBPrescaler::DIV1,
             apb2_pre: APBPrescaler::DIV1,
+
+            #[cfg(dsihost)]
+            dsi: None,
+
+            #[cfg(all(any(stm32f4, stm32f7), ltdc))]
+            lcd_div: None,
 
             ls: crate::rcc::LsConfig::new(),
 
@@ -193,6 +211,21 @@ pub(crate) unsafe fn init(config: Config) {
         }
     };
 
+    #[cfg(all(any(stm32f4, stm32f7), ltdc))]
+    {
+        if let Some(lcd_div) = config.lcd_div {
+            use stm32_metapac::rcc::vals::Pllsaidivr;
+
+            #[cfg(stm32f4)]
+            RCC.dckcfgr()
+                .modify(|w| w.set_pllsaidivr(Pllsaidivr::from_bits(lcd_div as u8)));
+
+            #[cfg(stm32f7)]
+            RCC.dckcfgr1()
+                .modify(|w| w.set_pllsaidivr(Pllsaidivr::from_bits(lcd_div as u8)));
+        }
+    }
+
     // Configure PLLs.
     let pll_input = PllInput {
         hse,
@@ -201,11 +234,29 @@ pub(crate) unsafe fn init(config: Config) {
         external: config.external_i2s_clock,
         source: config.pll_src,
     };
-    let pll = init_pll(PllInstance::Pll, config.pll, &pll_input);
+    let pll = config.pll.map_or_else(
+        || {
+            pll_enable(PllInstance::Pll, false);
+            PllOutput::default()
+        },
+        |c| init_pll(PllInstance::Pll, Some(c), &pll_input),
+    );
     #[cfg(any(stm32f2, all(stm32f4, not(stm32f410)), stm32f7))]
-    let plli2s = init_pll(PllInstance::Plli2s, config.plli2s, &pll_input);
+    let plli2s = config.plli2s.map_or_else(
+        || {
+            pll_enable(PllInstance::Plli2s, false);
+            PllOutput::default()
+        },
+        |c| init_pll(PllInstance::Plli2s, Some(c), &pll_input),
+    );
     #[cfg(any(stm32f446, stm32f427, stm32f437, stm32f4x9, stm32f7))]
-    let pllsai = init_pll(PllInstance::Pllsai, config.pllsai, &pll_input);
+    let pllsai = config.pllsai.map_or_else(
+        || {
+            pll_enable(PllInstance::Pllsai, false);
+            PllOutput::default()
+        },
+        |c| init_pll(PllInstance::Pllsai, Some(c), &pll_input),
+    );
 
     // Configure sysclk
     let sys = match config.sys {
@@ -320,7 +371,7 @@ pub(crate) unsafe fn init(config: Config) {
         pllsai1_q: None,
 
         #[cfg(dsihost)]
-        dsi_phy: None, // DSI PLL clock not supported, don't call `RccPeripheral::frequency()` in the drivers
+        dsi_phy: config.dsi.map(|config| dsi::configure_pll(hse, config)),
 
         hsi_hse: None,
         afif: None,

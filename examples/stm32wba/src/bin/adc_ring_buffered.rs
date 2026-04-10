@@ -17,19 +17,23 @@
 #![no_main]
 
 use defmt::*;
-use embassy_stm32::Config;
 use embassy_stm32::adc::adc4::Calibration;
-use embassy_stm32::adc::{Adc, AdcChannel, RegularConversionMode, RingBufferedAdc, adc4};
-use embassy_stm32::peripherals::ADC4;
+use embassy_stm32::adc::{Adc, AdcChannel, RingBufferedAdc, adc4};
+use embassy_stm32::peripherals::GPDMA1_CH1;
 use embassy_stm32::rcc::{
     AHB5Prescaler, AHBPrescaler, APBPrescaler, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk, VoltageScale,
 };
+use embassy_stm32::{Config, bind_interrupts, dma};
 use {defmt_rtt as _, panic_probe as _};
 
 // DMA buffer size - must be large enough to prevent overruns
 // Buffer holds: [vrefint, vcore, temp, vrefint, vcore, temp, ...]
 // Size should be a multiple of number of channels (3) and large enough for processing
 const DMA_BUF_LEN: usize = 3 * 256; // 256 samples per channel
+
+bind_interrupts!(struct Irqs {
+    GPDMA1_CHANNEL1 => dma::InterruptHandler<GPDMA1_CH1>;
+});
 
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) {
@@ -73,9 +77,9 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let max_count = adc4::resolution_to_max_count(adc4::Resolution::BITS12);
 
     // Enable internal channels
-    let vrefint = adc.enable_vrefint_adc4();
-    let temperature = adc.enable_temperature_adc4();
-    let vcore = adc.enable_vcore_adc4();
+    let mut vrefint = adc.enable_vrefint_adc4();
+    let mut temperature = adc.enable_temperature_adc4();
+    let mut vcore = adc.enable_vcore_adc4();
 
     // Degrade to AnyAdcChannel for use with DMA
     // IMPORTANT: Order matters for ADC4 - must be ascending channel numbers
@@ -92,16 +96,17 @@ async fn main(_spawner: embassy_executor::Spawner) {
     // Create the ring-buffered ADC with continuous mode
     // Channels must be in ascending order for ADC4
     // CYCLES12_5 + Samples128 averaging = 5000 samples/sec per channel
-    let mut ring_adc: RingBufferedAdc<ADC4> = adc.into_ring_buffered(
+    let mut ring_adc: RingBufferedAdc<_> = adc.into_ring_buffered(
         p.GPDMA1_CH1,
         unsafe { &mut *core::ptr::addr_of_mut!(DMA_BUF) },
+        Irqs,
         [
             (vrefint_ch, adc4::SampleTime::CYCLES12_5), // Channel 0
             (vcore_ch, adc4::SampleTime::CYCLES12_5),   // Channel 12
             (temp_ch, adc4::SampleTime::CYCLES12_5),    // Channel 13
         ]
         .into_iter(),
-        RegularConversionMode::Continuous,
+        None,
     );
 
     info!("Ring buffer configured, starting continuous sampling...");

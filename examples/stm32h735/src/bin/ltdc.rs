@@ -23,7 +23,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::pixelcolor::raw::RawU24;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
-use heapless::{Entry, FnvIndexMap};
+use heapless::index_map::{Entry, FnvIndexMap};
 use tinybmp::Bmp;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -73,9 +73,9 @@ async fn main(spawner: Spawner) {
     };
 
     info!("init ltdc");
-    let mut ltdc = Ltdc::new_with_pins(
-        p.LTDC, Irqs, p.PG7, p.PC6, p.PA4, p.PG14, p.PD0, p.PD6, p.PA8, p.PE12, p.PA3, p.PB8, p.PB9, p.PB1, p.PB0,
-        p.PA6, p.PE11, p.PH15, p.PH4, p.PC7, p.PD3, p.PE0, p.PH3, p.PH8, p.PH9, p.PH10, p.PH11, p.PE1, p.PE15,
+    let mut ltdc = Ltdc::<_, ltdc::Rgb888>::new_with_pins(
+        p.LTDC, Irqs, p.PG7, p.PC6, p.PA4, p.PE13, p.PG14, p.PD0, p.PD6, p.PA8, p.PE12, p.PA3, p.PB8, p.PB9, p.PB1,
+        p.PB0, p.PA6, p.PE11, p.PH15, p.PH4, p.PC7, p.PD3, p.PE0, p.PH3, p.PH8, p.PH9, p.PH10, p.PH11, p.PE1, p.PE15,
     );
     ltdc.init(&ltdc_config);
 
@@ -127,7 +127,7 @@ async fn main(spawner: Spawner) {
 
 /// builds the color look-up table from all unique colors found in the bitmap. This should be a 256 color indexed bitmap to work.
 fn build_color_lookup_map(bmp: &Bmp<Rgb888>) -> FnvIndexMap<u32, u8, NUM_COLORS> {
-    let mut color_map: FnvIndexMap<u32, u8, NUM_COLORS> = heapless::FnvIndexMap::new();
+    let mut color_map: FnvIndexMap<u32, u8, NUM_COLORS> = FnvIndexMap::new();
     let mut counter: u8 = 0;
 
     // add black to position 0

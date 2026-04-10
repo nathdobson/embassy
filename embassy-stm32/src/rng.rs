@@ -1,6 +1,7 @@
 //! Random Number Generator (RNG)
 #![macro_use]
 
+use core::convert::Infallible;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
@@ -144,6 +145,13 @@ impl<'d, T: Instance> Rng<'d, T> {
             reg.set_rngen(true);
             reg.set_condrst(false);
         });
+
+        // According to reference manual for RNGv3: SEIS must be cleared manually.
+        // RNGv2 does not say anything about SEIS clearing, but ST Cube HAL clears it.
+        T::regs().sr().modify(|reg| {
+            reg.set_seis(false);
+        });
+
         // According to reference manual: after software reset, wait for random number to be ready
         // The next_u32() call will wait for DRDY, completing the initialization
         let _ = self.next_u32();
@@ -293,6 +301,26 @@ impl<'d, T: Instance> rand_core_09::RngCore for Rng<'d, T> {
 }
 
 impl<'d, T: Instance> rand_core_09::CryptoRng for Rng<'d, T> {}
+
+impl<'d, T: Instance> rand_core_10::TryRng for Rng<'d, T> {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.next_u32())
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.next_u64())
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+        self.fill_bytes(dest);
+
+        Ok(())
+    }
+}
+
+impl<'d, T: Instance> rand_core_10::TryCryptoRng for Rng<'d, T> {}
 
 trait SealedInstance {
     fn regs() -> pac::rng::Rng;

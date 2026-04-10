@@ -1,89 +1,49 @@
 //! I3C Support
 
+use core::marker::PhantomData;
+
 use embassy_hal_internal::PeripheralType;
 use maitake_sync::WaitCell;
 use paste::paste;
 
-use crate::clocks::ClockError;
+use crate::clocks::Gate;
+use crate::clocks::periph_helpers::I3cConfig;
+use crate::dma::{DmaChannel, DmaRequest};
 use crate::gpio::{GpioPin, SealedPin};
 use crate::{interrupt, pac};
 
 pub mod controller;
 
-/// Error information type
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum Error {
-    /// Clock configuration error.
-    ClockSetup(ClockError),
-    /// Underrun error
-    Underrun,
-    /// Not Acknowledge error
-    Nack,
-    /// Write abort error
-    WriteAbort,
-    /// Terminate error
-    Terminate,
-    /// High data rate parity flag
-    HighDataRateParity,
-    /// High data rate CRC error
-    HighDataRateCrc,
-    /// Overread error
-    Overread,
-    /// Overwrite error
-    Overwrite,
-    /// Message error
-    Message,
-    /// Invalid request error
-    InvalidRequest,
-    /// Timeout error
-    Timeout,
-    /// Address out of range.
-    AddressOutOfRange(u8),
-    /// Invalid write buffer length.
-    InvalidWriteBufferLength,
-    /// Invalid read buffer length.
-    InvalidReadBufferLength,
-    /// User provided an invalid configuration
-    InvalidConfiguration,
-    /// Other internal errors or unexpected state.
-    Other,
+/// I3C interrupt handler.
+pub struct InterruptHandler<T: Instance> {
+    _phantom: PhantomData<T>,
 }
 
-/// I3C interrupt handler.
-pub struct InterruptHandler;
-
-impl interrupt::typelevel::Handler<interrupt::typelevel::I3C0> for InterruptHandler {
+impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
-        let status = info().regs().mintmasked().read();
+        let status = T::info().regs().mintmasked().read();
+        T::PERF_INT_INCR();
 
-        if status.nowmaster().bit_is_set()
-            || status.complete().bit_is_set()
-            || status.mctrldone().bit_is_set()
-            || status.slvstart().bit_is_set()
-            || status.errwarn().bit_is_set()
-            || status.rxpend().bit_is_set()
-            || status.txnotfull().bit_is_set()
+        if status.nowmaster()
+            || status.complete()
+            || status.mctrldone()
+            || status.slvstart()
+            || status.errwarn()
+            || status.rxpend()
+            || status.txnotfull()
         {
-            info().regs().mintclr().write(|w| {
-                w.nowmaster()
-                    .clear_bit_by_one()
-                    .complete()
-                    .clear_bit_by_one()
-                    .mctrldone()
-                    .clear_bit_by_one()
-                    .slvstart()
-                    .clear_bit_by_one()
-                    .errwarn()
-                    .clear_bit_by_one()
-                    .rxpend()
-                    .clear_bit_by_one()
-                    .txnotfull()
-                    .clear_bit_by_one()
+            T::info().regs().mintclr().write(|w| {
+                w.set_nowmaster(true);
+                w.set_complete(true);
+                w.set_mctrldone(true);
+                w.set_slvstart(true);
+                w.set_errwarn(true);
+                w.set_rxpend(true);
+                w.set_txnotfull(true);
             });
 
-            info().wait_cell().wake();
+            T::PERF_INT_WAKE_INCR();
+            T::info().wait_cell().wake();
         }
     }
 }
@@ -93,8 +53,24 @@ mod sealed {
     pub trait Sealed {}
 }
 
+trait SealedInstance: Gate<MrccPeriphConfig = I3cConfig> {
+    fn info() -> &'static Info;
+
+    const PERF_INT_INCR: fn();
+    const PERF_INT_WAKE_INCR: fn();
+    const TX_DMA_REQUEST: DmaRequest;
+    const RX_DMA_REQUEST: DmaRequest;
+}
+
+/// I3C Instance
+#[allow(private_bounds)]
+pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
+    /// Interrupt for this I3C instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
+
 struct Info {
-    regs: *const pac::i3c0::RegisterBlock,
+    regs: pac::i3c::I3c,
     wait_cell: WaitCell,
 }
 
@@ -102,8 +78,8 @@ unsafe impl Sync for Info {}
 
 impl Info {
     #[inline(always)]
-    fn regs(&self) -> &'static pac::i3c0::RegisterBlock {
-        unsafe { &*self.regs }
+    fn regs(&self) -> pac::i3c::I3c {
+        self.regs
     }
 
     #[inline(always)]
@@ -112,27 +88,55 @@ impl Info {
     }
 }
 
-fn info() -> &'static Info {
-    static INFO: Info = Info {
-        regs: pac::I3c0::ptr(),
-        wait_cell: WaitCell::new(),
+macro_rules! impl_instance {
+    ($($n:literal);*) => {
+        $(
+            paste! {
+                impl SealedInstance for crate::peripherals::[<I3C $n>] {
+                    fn info() -> &'static Info {
+                        static INFO: Info = Info {
+                            regs: pac::[<I3C $n>],
+                            wait_cell: WaitCell::new(),
+                        };
+                        &INFO
+                    }
+
+                    const TX_DMA_REQUEST: DmaRequest = DmaRequest::[<I3C $n Tx>];
+                    const RX_DMA_REQUEST: DmaRequest = DmaRequest::[<I3C $n Rx>];
+                    const PERF_INT_INCR: fn() = crate::perf_counters::[<incr_interrupt_i3c $n>];
+                    const PERF_INT_WAKE_INCR: fn() = crate::perf_counters::[<incr_interrupt_i3c $n _wake>];
+                }
+
+                impl Instance for crate::peripherals::[<I3C $n>] {
+                    type Interrupt = crate::interrupt::typelevel::[<I3C $n>];
+                }
+            }
+        )*
     };
-    &INFO
 }
 
+impl_instance!(0);
+
+#[cfg(feature = "mcxa5xx")]
+impl_instance!(1; 2; 3);
+
 /// SCL pin trait.
-pub trait SclPin<I3C0>: GpioPin + sealed::Sealed + PeripheralType {
+pub trait SclPin<T: Instance>: GpioPin + sealed::Sealed + PeripheralType {
     fn mux(&self);
 }
 
 /// SDA pin trait.
-pub trait SdaPin<I3C0>: GpioPin + sealed::Sealed + PeripheralType {
+pub trait SdaPin<T: Instance>: GpioPin + sealed::Sealed + PeripheralType {
     fn mux(&self);
 }
 
 /// Driver mode.
 #[allow(private_bounds)]
 pub trait Mode: sealed::Sealed {}
+
+/// Async driver mode.
+#[allow(private_bounds)]
+pub trait AsyncMode: sealed::Sealed + Mode {}
 
 /// Blocking mode.
 pub struct Blocking;
@@ -143,32 +147,88 @@ impl Mode for Blocking {}
 pub struct Async;
 impl sealed::Sealed for Async {}
 impl Mode for Async {}
+impl AsyncMode for Async {}
+
+/// DMA mode.
+pub struct Dma<'d> {
+    tx_dma: DmaChannel<'d>,
+    tx_request: DmaRequest,
+
+    rx_dma: DmaChannel<'d>,
+    rx_request: DmaRequest,
+}
+impl sealed::Sealed for Dma<'_> {}
+impl Mode for Dma<'_> {}
+impl AsyncMode for Dma<'_> {}
 
 macro_rules! impl_pin {
-    ($pin:ident, $fn:ident, $trait:ident) => {
+    ($pin:ident, $peri:ident, $fn:ident, $trait:ident) => {
         paste! {
             impl sealed::Sealed for crate::peripherals::$pin {}
 
-            impl $trait<crate::peripherals::I3C0> for crate::peripherals::$pin {
+            impl $trait<crate::peripherals::$peri> for crate::peripherals::$pin {
                 fn mux(&self) {
                     self.set_pull(crate::gpio::Pull::Disabled);
                     self.set_slew_rate(crate::gpio::SlewRate::Fast.into());
                     self.set_drive_strength(crate::gpio::DriveStrength::Double.into());
-                    self.set_function(crate::pac::port0::pcr0::Mux::$fn);
-                    self.set_enable_input_buffer();
+                    self.set_function(crate::pac::port::Mux::$fn);
+                    self.set_enable_input_buffer(true);
                 }
             }
         }
     };
 }
 
-// impl_pin!(P0_2, Mux10, PurPin); REVISIT: what is this for?
-impl_pin!(P0_17, Mux10, SclPin);
-impl_pin!(P0_18, Mux10, SdaPin);
-impl_pin!(P1_8, Mux10, SdaPin);
-impl_pin!(P1_9, Mux10, SclPin);
-// impl_pin!(P1_11, Mux10, PurPin); REVISIT: what is this for?
-#[cfg(feature = "sosc-as-gpio")]
-impl_pin!(P1_30, Mux10, SdaPin);
-#[cfg(feature = "sosc-as-gpio")]
-impl_pin!(P1_31, Mux10, SclPin);
+#[cfg(feature = "mcxa2xx")]
+mod mcxa2xx_pins {
+    use super::*;
+    // impl_pin!(P0_2, I3C0, MUX10, PurPin); REVISIT: what is this for?
+    impl_pin!(P0_17, I3C0, MUX10, SclPin);
+    impl_pin!(P0_18, I3C0, MUX10, SdaPin);
+    impl_pin!(P1_8, I3C0, MUX10, SdaPin);
+    impl_pin!(P1_9, I3C0, MUX10, SclPin);
+    // impl_pin!(P1_11, I3C0, MUX10, PurPin); REVISIT: what is this for?
+    #[cfg(feature = "sosc-as-gpio")]
+    impl_pin!(P1_30, I3C0, MUX10, SdaPin);
+    #[cfg(feature = "sosc-as-gpio")]
+    impl_pin!(P1_31, I3C0, MUX10, SclPin);
+}
+
+#[cfg(feature = "mcxa5xx")]
+mod mcxa5xx_pins {
+    use super::*;
+
+    // impl_pin!(P0_2, I3C0, MUX10, PurPin); REVISIT: what is this for?
+    impl_pin!(P0_16, I3C0, MUX10, SdaPin);
+    impl_pin!(P0_17, I3C0, MUX10, SclPin);
+    impl_pin!(P0_20, I3C0, MUX10, SdaPin);
+    impl_pin!(P0_21, I3C0, MUX10, SclPin);
+    // impl_pin!(P0_22, I3C0, MUX10, PurPin); REVISIT: what is this for?
+
+    impl_pin!(P1_5, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_6, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_7, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_8, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_9, I3C1, MUX10, SclPin);
+    impl_pin!(P1_14, I3C1, MUX10, SdaPin);
+    // impl_pin!(P1_15, I3C1, MUX10, PurPin); REVISIT: what is this for?
+    impl_pin!(P1_16, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_17, I3C1, MUX10, SclPin);
+    impl_pin!(P1_18, I3C1, MUX10, SdaPin);
+    impl_pin!(P1_19, I3C1, MUX10, SdaPin);
+    #[cfg(feature = "sosc-as-gpio")]
+    impl_pin!(P1_30, I3C2, MUX10, SdaPin);
+    #[cfg(feature = "sosc-as-gpio")]
+    impl_pin!(P1_31, I3C2, MUX10, SclPin);
+
+    // impl_pin!(P4_0, I3C2, MUX10, PurPin); REVISIT: what is this for?
+    // impl_pin!(P4_1, I3C3, MUX10, PurPin); REVISIT: what is this for?
+    // impl_pin!(P4_12, I3C2, MUX10, PurPin); REVISIT: what is this for?
+    // impl_pin!(P4_13, I3C3, MUX10, PurPin); REVISIT: what is this for?
+    impl_pin!(P4_2, I3C3, MUX10, SdaPin);
+    impl_pin!(P4_3, I3C2, MUX10, SclPin);
+    impl_pin!(P4_4, I3C2, MUX10, SdaPin);
+    impl_pin!(P4_5, I3C3, MUX10, SclPin);
+    impl_pin!(P4_6, I3C3, MUX10, SclPin);
+    impl_pin!(P4_7, I3C3, MUX10, SdaPin);
+}
