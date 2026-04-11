@@ -9,8 +9,6 @@
 
 use crate::Peri;
 use crate::flash::in_ram;
-use core::mem;
-use rp_pac::io::regs::GpioStatus;
 
 /// Reads the BOOTSEL button. Returns true if the button is pressed.
 ///
@@ -22,12 +20,20 @@ pub fn is_bootsel_pressed(_p: Peri<'_, crate::peripherals::BOOTSEL>) -> bool {
     unsafe { in_ram(|| cs_status = ram_helpers::read_cs_status()) }
         .expect("Must be called from Core 0");
     info!("{}", cs_status);
-    // bootsel is active low, so invert
-    !unsafe { mem::transmute::<_, GpioStatus>(cs_status) }.infrompad()
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "rp2040")] {
+            cs_status & 1 != 0
+        }else if #[cfg(feature = "_rp235x")] {
+            cs_status & 0x08000000 != 0
+        }else{
+            compile_error!("chip not supported")
+        }
+    }
 }
 
 mod ram_helpers {
-    use rp_pac::io::regs::GpioStatus;
+    use rp_pac::IO_QSPI;
+    use rp_pac::SIO;
 
     /// Temporally reconfigures the CS gpio and returns the GpioStatus.
 
@@ -41,12 +47,11 @@ mod ram_helpers {
     #[inline(never)]
     #[unsafe(link_section = ".data.ram_func")]
     #[cfg(target_arch = "arm")]
-    #[unsafe(no_mangle)]
     pub unsafe fn read_cs_status() -> u32 {
         let mut result: u32 = 0;
 
-        // Magic value, used as both OEOVER::DISABLE and delay loop counter
-        let magic = 0x8000;
+        let delay = 1000;
+        const REG_ALIAS_XOR_BITS: usize = 1 << 12;
 
         core::arch::asm!(
             ".equiv GPIO_REG, 0x1c",
@@ -74,11 +79,11 @@ mod ram_helpers {
             "and {ctrl}, {ctrl}, #0xc000",
             "str {ctrl}, [{gpio_xor}, $GPIO_REG]",
 
-            gpio = in(reg) 0x40030000,
-            gpio_xor = in(reg) 0x40031000,
-            gpio_read = in(reg) 0xd0000000u32,
+            gpio = in(reg) IO_QSPI.as_ptr(),
+            gpio_xor = in(reg) IO_QSPI.as_ptr() as usize + REG_ALIAS_XOR_BITS,
+            gpio_read = in(reg) SIO.as_ptr(),
             ctrl = out(reg) _,
-            val = inout(reg) magic => result,
+            val = inout(reg) delay => result,
             options(nostack),
         );
 
