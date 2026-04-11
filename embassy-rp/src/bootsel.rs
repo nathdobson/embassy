@@ -16,15 +16,13 @@ use crate::flash::in_ram;
 /// task and for any DMAs from flash to complete
 pub fn is_bootsel_pressed(_p: Peri<'_, crate::peripherals::BOOTSEL>) -> bool {
     let mut cs_status = 0u32;
-
     unsafe { in_ram(|| cs_status = ram_helpers::read_cs_status()) }
         .expect("Must be called from Core 0");
-    info!("{}", cs_status);
     cfg_if::cfg_if! {
         if #[cfg(feature = "rp2040")] {
-            cs_status & 1 != 0
+            cs_status & 1 == 0
         }else if #[cfg(feature = "_rp235x")] {
-            cs_status & 0x08000000 != 0
+            cs_status & 0x08000000 == 0
         }else{
             compile_error!("chip not supported")
         }
@@ -67,7 +65,7 @@ mod ram_helpers {
             "str {ctrl}, [{gpio_xor}, $GPIO_REG]",
 
             // ...then wait for the state to settle...
-            "2:", // ~4000 cycle delay loop
+            "2:",
             "subs {val}, #1",
             "bne 2b",
 
