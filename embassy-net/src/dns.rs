@@ -8,18 +8,21 @@ use heapless::Vec;
 pub use smoltcp::socket::dns::{DnsQuery, Socket};
 pub(crate) use smoltcp::socket::dns::{GetQueryResultError, StartQueryError};
 pub use smoltcp::wire::{DnsQueryType, IpAddress};
-
+use thiserror::Error;
 use crate::Stack;
 
 /// Errors returned by DnsSocket.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     /// Invalid name
+    #[error("invalid name")]
     InvalidName,
     /// Name too long
+    #[error("name too long")]
     NameTooLong,
     /// Name lookup failed
+    #[error("name lookup failed")]
     Failed,
 }
 
@@ -110,7 +113,11 @@ impl<'a> embedded_nal_async::Dns for DnsSocket<'a> {
         }
     }
 
-    async fn get_host_by_address(&self, _addr: core::net::IpAddr, _result: &mut [u8]) -> Result<usize, Self::Error> {
+    async fn get_host_by_address(
+        &self,
+        _addr: core::net::IpAddr,
+        _result: &mut [u8],
+    ) -> Result<usize, Self::Error> {
         todo!()
     }
 }

@@ -12,14 +12,14 @@ use core::future::{Future, poll_fn};
 use core::mem;
 use core::task::{Context, Poll};
 
+use crate::Stack;
+use crate::time::duration_to_smoltcp;
 use embassy_time::Duration;
 use smoltcp::iface::{Interface, SocketHandle};
 use smoltcp::socket::tcp;
 pub use smoltcp::socket::tcp::State;
 use smoltcp::wire::{IpEndpoint, IpListenEndpoint};
-
-use crate::Stack;
-use crate::time::duration_to_smoltcp;
+use thiserror::Error;
 
 /// Error returned by TcpSocket read/write functions.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -32,16 +32,20 @@ pub enum Error {
 }
 
 /// Error returned by [`TcpSocket::connect`].
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectError {
     /// The socket is already connected or listening.
+    #[error("socket is already connected or listening")]
     InvalidState,
     /// The remote host rejected the connection with a RST packet.
+    #[error("connection reset")]
     ConnectionReset,
     /// Connect timed out.
+    #[error("connect timed out")]
     TimedOut,
     /// No route to host.
+    #[error("no route to host")]
     NoRoute,
 }
 
@@ -669,13 +673,6 @@ impl<'d> TcpIo<'d> {
 
 mod embedded_io_impls {
     use super::*;
-
-    impl core::fmt::Display for ConnectError {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.write_str("ConnectError")
-        }
-    }
-    impl core::error::Error for ConnectError {}
 
     impl embedded_io_async::Error for ConnectError {
         fn kind(&self) -> embedded_io_async::ErrorKind {

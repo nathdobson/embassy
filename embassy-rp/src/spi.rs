@@ -1,4 +1,6 @@
 //! Serial Peripheral Interface
+
+use core::fmt::{Display, Formatter};
 use core::marker::PhantomData;
 
 use embassy_embedded_hal::SetConfig;
@@ -17,6 +19,14 @@ use crate::{dma, interrupt, pac, peripherals};
 pub enum Error {
     // No errors for now
 }
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl core::error::Error for Error {}
 
 /// SPI configuration.
 #[non_exhaustive]

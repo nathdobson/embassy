@@ -1,13 +1,15 @@
 //! Flash driver.
+
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use thiserror::Error;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 use embedded_storage::nor_flash::{
-    ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash, check_erase, check_read,
-    check_write,
+    ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
+    check_erase, check_read, check_write,
 };
 
 use crate::peripherals::FLASH;
@@ -41,16 +43,20 @@ pub const ERASE_SIZE: usize = 4096;
 pub const ASYNC_READ_SIZE: usize = 4;
 
 /// Error type for NVMC operations.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     /// Operation using a location not in flash.
+    #[error("operation using a location not in flash")]
     OutOfBounds,
     /// Unaligned operation or using unaligned buffers.
+    #[error("unaligned operation or using unaligned buffers")]
     Unaligned,
     /// Accessed from the wrong core.
+    #[error("accessed from the wrong core")]
     InvalidCore,
     /// Other error
+    #[error("other error")]
     Other,
 }
 
