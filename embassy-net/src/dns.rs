@@ -113,11 +113,7 @@ impl<'a> embedded_nal_async::Dns for DnsSocket<'a> {
         }
     }
 
-    async fn get_host_by_address(
-        &self,
-        _addr: core::net::IpAddr,
-        _result: &mut [u8],
-    ) -> Result<usize, Self::Error> {
+    async fn get_host_by_address(&self, _addr: core::net::IpAddr, _result: &mut [u8]) -> Result<usize, Self::Error> {
         todo!()
     }
 }
