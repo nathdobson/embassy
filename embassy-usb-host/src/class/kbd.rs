@@ -4,12 +4,12 @@
 use core::num::NonZeroU8;
 
 use bitflags::bitflags;
-use embassy_usb_driver::host::{HostError, UsbChannel, UsbHostDriver, channel};
+use embassy_usb_driver::host::{HostError, UsbHostAllocator, UsbPipe, pipe};
 use embassy_usb_driver::{Direction, EndpointInfo, EndpointType};
 
-use crate::control::ControlChannelExt;
+use crate::control::ControlPipeExt;
 use crate::descriptor::{DEFAULT_MAX_DESCRIPTOR_SIZE, InterfaceDescriptor, USBDescriptor};
-use crate::handler::{EnumerationInfo, HandlerEvent, RegisterError, UsbHostHandler};
+use crate::handler::{EnumerationInfo, HandlerEvent, RegisterError};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -37,29 +37,25 @@ pub enum KbdEvent {
 }
 
 /// Host-side HID boot-keyboard driver.
-pub struct KbdHandler<H: UsbHostDriver> {
-    interrupt_channel: H::Channel<channel::Interrupt, channel::In>,
-    control_channel: H::Channel<channel::Control, channel::InOut>,
+pub struct KbdHandler<'d, A: UsbHostAllocator<'d>> {
+    interrupt_channel: A::Pipe<pipe::Interrupt, pipe::In>,
+    control_channel: A::Pipe<pipe::Control, pipe::InOut>,
+    _phantom: core::marker::PhantomData<&'d ()>,
 }
 
-impl<H: UsbHostDriver> UsbHostHandler for KbdHandler<H> {
-    type PollEvent = KbdEvent;
-    type Driver = H;
-
-    fn static_spec() -> crate::handler::StaticHandlerSpec {
-        crate::handler::StaticHandlerSpec { device_filter: None }
-    }
-
-    async fn try_register(bus: &H, enum_info: &EnumerationInfo) -> Result<Self, RegisterError> {
-        let mut control_channel = bus.alloc_channel::<channel::Control, channel::InOut>(
+impl<'d, A: UsbHostAllocator<'d>> KbdHandler<'d, A> {
+    /// Attempt to register a keyboard handler for the given device.
+    pub async fn try_register(alloc: &A, enum_info: &EnumerationInfo) -> Result<Self, RegisterError> {
+        let mut control_channel = alloc.alloc_pipe::<pipe::Control, pipe::InOut>(
             enum_info.device_address,
             &EndpointInfo {
                 addr: 0.into(),
                 ep_type: EndpointType::Control,
-                max_packet_size: (enum_info.device_desc.max_packet_size0 as u16).min(enum_info.speed.max_packet_size()),
+                max_packet_size: (enum_info.device_desc.max_packet_size0 as u16)
+                    .min(enum_info.speed().max_packet_size()),
                 interval_ms: 0,
             },
-            enum_info.ls_over_fs,
+            enum_info.split(),
         )?;
 
         let mut cfg_desc_buf = [0u8; DEFAULT_MAX_DESCRIPTOR_SIZE];
@@ -91,10 +87,10 @@ impl<H: UsbHostDriver> UsbHostHandler for KbdHandler<H> {
             .set_configuration(configuration.configuration_value)
             .await?;
 
-        let interrupt_channel = bus.alloc_channel::<channel::Interrupt, channel::In>(
+        let interrupt_channel = alloc.alloc_pipe::<pipe::Interrupt, pipe::In>(
             enum_info.device_address,
             &interrupt_ep.into(),
-            enum_info.ls_over_fs,
+            enum_info.split(),
         )?;
 
         debug!("[kbd]: Setting PROTOCOL & idle");
@@ -118,10 +114,12 @@ impl<H: UsbHostDriver> UsbHostHandler for KbdHandler<H> {
         Ok(KbdHandler {
             interrupt_channel,
             control_channel,
+            _phantom: core::marker::PhantomData,
         })
     }
 
-    async fn wait_for_event(&mut self) -> Result<HandlerEvent<Self::PollEvent>, HostError> {
+    /// Wait for the next keyboard event.
+    pub async fn wait_for_event(&mut self) -> Result<HandlerEvent<KbdEvent>, HostError> {
         let mut buffer = [0u8; 8];
         debug!("[kbd]: Requesting interrupt IN");
         self.interrupt_channel.request_in(&mut buffer[..]).await?;
@@ -129,6 +127,15 @@ impl<H: UsbHostDriver> UsbHostHandler for KbdHandler<H> {
         Ok(HandlerEvent::HandlerEvent(KbdEvent::KeyStatusUpdate(
             KeyStatusUpdate::from_buffer_unchecked(buffer),
         )))
+    }
+
+    /// SET_REPORT — update keyboard LEDs.
+    pub async fn set_state(&mut self, state: &KeyboardState) -> Result<(), HostError> {
+        const SET_REPORT: u8 = 0x09;
+        const OUTPUT_REPORT: u16 = 2 << 8;
+        self.control_channel
+            .class_request_out(SET_REPORT, OUTPUT_REPORT, 0, &[state.bits()])
+            .await
     }
 }
 
@@ -140,17 +147,6 @@ bitflags! {
         const SCROLL_LOCK = 1 << 2;
         const COMPOSE     = 1 << 3;
         const KANA        = 1 << 4;
-    }
-}
-
-impl<H: UsbHostDriver> KbdHandler<H> {
-    /// SET_REPORT — update keyboard LEDs.
-    pub async fn set_state(&mut self, state: &KeyboardState) -> Result<(), HostError> {
-        const SET_REPORT: u8 = 0x09;
-        const OUTPUT_REPORT: u16 = 2 << 8;
-        self.control_channel
-            .class_request_out(SET_REPORT, OUTPUT_REPORT, 0, &[state.bits()])
-            .await
     }
 }
 

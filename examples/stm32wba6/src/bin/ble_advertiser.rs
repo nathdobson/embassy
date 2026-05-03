@@ -31,10 +31,11 @@ use embassy_stm32::rcc::{
 };
 use embassy_stm32::rng::{self, Rng};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{Config, bind_interrupts, interrupt};
-use embassy_stm32_wpan::gap::{AdvData, AdvParams, AdvType};
-use embassy_stm32_wpan::gatt::{CharProperties, GattEventMask, GattServer, SecurityPermissions, ServiceType, Uuid};
-use embassy_stm32_wpan::{Ble, ble_runner, run_radio_high_isr, run_radio_sw_low_isr};
+use embassy_stm32::{Config, bind_interrupts};
+use embassy_stm32_wpan::bluetooth::HCI;
+use embassy_stm32_wpan::bluetooth::gap::{AdvData, AdvParams, AdvType};
+use embassy_stm32_wpan::bluetooth::gatt::{CharProperties, GattEventMask, SecurityPermissions, ServiceType, Uuid};
+use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, ble_runner, new_controller_state};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use static_cell::StaticCell;
@@ -44,20 +45,9 @@ bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<RNG>;
     AES => aes::InterruptHandler<AES>;
     PKA => pka::InterruptHandler<PKA>;
+    RADIO => HighInterruptHandler;
+    HASH => LowInterruptHandler;
 });
-
-// RADIO interrupt handler - required for BLE stack operation
-#[interrupt]
-unsafe fn RADIO() {
-    unsafe { run_radio_high_isr() };
-}
-
-// HASH interrupt handler - used as software low-priority interrupt for BLE
-#[interrupt]
-unsafe fn HASH() {
-    unsafe { run_radio_sw_low_isr() };
-}
-
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
 async fn ble_runner_task() {
@@ -70,12 +60,12 @@ async fn main(spawner: Spawner) {
 
     // Enable HSE (32 MHz external crystal) - REQUIRED for BLE radio
     config.rcc.hse = Some(Hse {
-        prescaler: HsePrescaler::DIV1,
+        prescaler: HsePrescaler::Div1,
     });
 
     // Enable LSE (32.768 kHz external crystal) - REQUIRED for BLE radio sleep timer
     config.rcc.ls = LsConfig {
-        rtc: RtcClockSource::LSE,
+        rtc: RtcClockSource::Lse,
         lsi: false,
         lse: Some(LseConfig {
             frequency: Hertz(32_768),
@@ -86,25 +76,25 @@ async fn main(spawner: Spawner) {
 
     // Configure PLL1 (required on WBA)
     config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
-        source: PllSource::HSI,
-        prediv: PllPreDiv::DIV1,  // PLLM = 1 → HSI / 1 = 16 MHz
-        mul: PllMul::MUL30,       // PLLN = 30 → 16 MHz * 30 = 480 MHz VCO
-        divr: Some(PllDiv::DIV5), // PLLR = 5 → 96 MHz (Sysclk)
+        source: PllSource::Hsi,
+        prediv: PllPreDiv::Div1,  // PLLM = 1 → HSI / 1 = 16 MHz
+        mul: PllMul::Mul30,       // PLLN = 30 → 16 MHz * 30 = 480 MHz VCO
+        divr: Some(PllDiv::Div5), // PLLR = 5 → 96 MHz (Sysclk)
         divq: None,
-        divp: Some(PllDiv::DIV30), // PLLP = 30 → 16 MHz (required for SAI)
+        divp: Some(PllDiv::Div30), // PLLP = 30 → 16 MHz (required for SAI)
         frac: Some(0),
     });
 
-    config.rcc.ahb_pre = AHBPrescaler::DIV1;
-    config.rcc.apb1_pre = APBPrescaler::DIV1;
-    config.rcc.apb2_pre = APBPrescaler::DIV1;
-    config.rcc.apb7_pre = APBPrescaler::DIV1;
-    config.rcc.ahb5_pre = AHB5Prescaler::DIV4;
-    config.rcc.voltage_scale = VoltageScale::RANGE1;
-    config.rcc.sys = Sysclk::PLL1_R;
+    config.rcc.ahb_pre = AHBPrescaler::Div1;
+    config.rcc.apb1_pre = APBPrescaler::Div1;
+    config.rcc.apb2_pre = APBPrescaler::Div1;
+    config.rcc.apb7_pre = APBPrescaler::Div1;
+    config.rcc.ahb5_pre = AHB5Prescaler::Div4;
+    config.rcc.voltage_scale = VoltageScale::Range1;
+    config.rcc.sys = Sysclk::Pll1R;
 
     // Configure RNG clock source to HSI (required for WBA)
-    config.rcc.mux.rngsel = mux::Rngsel::HSI;
+    config.rcc.mux.rngsel = mux::Rngsel::Hsi;
 
     let p = embassy_stm32::init(config);
 
@@ -114,7 +104,7 @@ async fn main(spawner: Spawner) {
         use embassy_stm32::pac::RCC;
         use embassy_stm32::pac::rcc::vals::Radiostsel;
         RCC.ecscr1().modify(|w| w.set_hsetrim(0x0C));
-        RCC.bdcr().modify(|w| w.set_radiostsel(Radiostsel::LSE));
+        RCC.bdcr().modify(|w| w.set_radiostsel(Radiostsel::Lse));
     }
 
     info!("Embassy STM32WBA6 BLE Advertiser Example");
@@ -132,18 +122,18 @@ async fn main(spawner: Spawner) {
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
 
-    // Initialize BLE stack
-    let mut ble = Ble::new(rng, aes, pka);
-    ble.init().expect("BLE initialization failed");
-    info!("BLE stack initialized");
-
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task().expect("Failed to spawn BLE runner"));
-    embassy_futures::yield_now().await;
+
+    // Initialize BLE stack
+    let mut ble = HCI::new(new_controller_state!(8), rng, aes, pka, Irqs)
+        .await
+        .expect("BLE initialization failed");
+
+    info!("BLE stack initialized");
 
     // Initialize GATT server
-    let mut gatt = GattServer::new();
-    gatt.init().expect("GATT initialization failed");
+    let mut gatt = ble.gatt_server();
     info!("GATT server initialized");
 
     // Create a custom service (UUID: 0x1234)
@@ -197,9 +187,8 @@ async fn main(spawner: Spawner) {
     };
 
     // Start advertising
-    let mut advertiser = ble.advertiser();
-    advertiser
-        .start(adv_params, adv_data, None)
+    ble.start_advertising(adv_params, adv_data, None)
+        .await
         .expect("Failed to start advertising");
 
     info!("BLE advertising started!");

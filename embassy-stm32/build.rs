@@ -680,23 +680,34 @@ fn main() {
         );
     }
 
+    fn pascal_to_upper_snake(s: &str) -> String {
+        let mut out = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if i > 0 && c.is_ascii_uppercase() {
+                out.push('_');
+            }
+            out.push(c.to_ascii_uppercase());
+        }
+        out
+    }
+
     impl<'a> ClockGen<'a> {
         fn parse_mul_div(name: &str) -> (&str, Frac) {
-            if name == "hse_div_rtcpre" {
-                return (name, Frac { num: 1, denom: 1 });
+            if let Some(i) = name.find("_div") {
+                let n = &name[..i];
+                if let Ok(val) = name[i + 4..].parse::<u32>() {
+                    return (n, Frac { num: 1, denom: val });
+                }
             }
 
-            if let Some(i) = name.find("_div_") {
+            if let Some(i) = name.find("_mul") {
                 let n = &name[..i];
-                let val: u32 = name[i + 5..].parse().unwrap();
-                (n, Frac { num: 1, denom: val })
-            } else if let Some(i) = name.find("_mul_") {
-                let n = &name[..i];
-                let val: u32 = name[i + 5..].parse().unwrap();
-                (n, Frac { num: val, denom: 1 })
-            } else {
-                (name, Frac { num: 1, denom: 1 })
+                if let Ok(val) = name[i + 4..].parse::<u32>() {
+                    return (n, Frac { num: val, denom: 1 });
+                }
             }
+            (name, Frac { num: 1, denom: 1 })
         }
 
         fn gen_clock(&mut self, peripheral: &str, name: &str) -> TokenStream {
@@ -748,12 +759,13 @@ fn main() {
 
             let mut match_arms = TokenStream::new();
 
-            for v in enumm.variants.iter().filter(|v| v.name != "DISABLE") {
+            for v in enumm.variants.iter().filter(|v| v.name != "Disable") {
                 let variant_name = format_ident!("{}", v.name);
-                let expr = if let Some(mux) = self.chained_muxes.get(&v.name) {
+                let upper_snake = pascal_to_upper_snake(v.name);
+                let expr = if let Some(mux) = self.chained_muxes.get(upper_snake.as_str()) {
                     self.gen_mux(peripheral, mux)
                 } else {
-                    self.gen_clock(peripheral, v.name)
+                    self.gen_clock(peripheral, &upper_snake)
                 };
                 match_arms.extend(quote! {
                     crate::pac::rcc::vals::#enum_name::#variant_name => #expr,
@@ -1287,18 +1299,18 @@ fn main() {
         (("timer", "BKIN2"), quote!(crate::timer::BreakInputPin<BkIn2>)),
         (("timer", "BKIN2_COMP1"), quote!(crate::timer::BreakInputComparator1Pin<BkIn2>)),
         (("timer", "BKIN2_COMP2"), quote!(crate::timer::BreakInputComparator2Pin<BkIn2>)),
-        (("hrtim", "CHA1"), quote!(crate::hrtim::ChannelAPin)),
-        (("hrtim", "CHA2"), quote!(crate::hrtim::ChannelAComplementaryPin)),
-        (("hrtim", "CHB1"), quote!(crate::hrtim::ChannelBPin)),
-        (("hrtim", "CHB2"), quote!(crate::hrtim::ChannelBComplementaryPin)),
-        (("hrtim", "CHC1"), quote!(crate::hrtim::ChannelCPin)),
-        (("hrtim", "CHC2"), quote!(crate::hrtim::ChannelCComplementaryPin)),
-        (("hrtim", "CHD1"), quote!(crate::hrtim::ChannelDPin)),
-        (("hrtim", "CHD2"), quote!(crate::hrtim::ChannelDComplementaryPin)),
-        (("hrtim", "CHE1"), quote!(crate::hrtim::ChannelEPin)),
-        (("hrtim", "CHE2"), quote!(crate::hrtim::ChannelEComplementaryPin)),
-        (("hrtim", "CHF1"), quote!(crate::hrtim::ChannelFPin)),
-        (("hrtim", "CHF2"), quote!(crate::hrtim::ChannelFComplementaryPin)),
+        (("hrtim", "CHA1"), quote!(crate::hrtim::HRTimerPin<ChA>)),
+        (("hrtim", "CHA2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChA>)),
+        (("hrtim", "CHB1"), quote!(crate::hrtim::HRTimerPin<ChB>)),
+        (("hrtim", "CHB2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChB>)),
+        (("hrtim", "CHC1"), quote!(crate::hrtim::HRTimerPin<ChC>)),
+        (("hrtim", "CHC2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChC>)),
+        (("hrtim", "CHD1"), quote!(crate::hrtim::HRTimerPin<ChD>)),
+        (("hrtim", "CHD2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChD>)),
+        (("hrtim", "CHE1"), quote!(crate::hrtim::HRTimerPin<ChE>)),
+        (("hrtim", "CHE2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChE>)),
+        (("hrtim", "CHF1"), quote!(crate::hrtim::HRTimerPin<ChF>)),
+        (("hrtim", "CHF2"), quote!(crate::hrtim::HRTimerComplementaryPin<ChF>)),
         (("lptim", "CH1"), quote!(crate::lptim::Channel1Pin)),
         (("lptim", "CH2"), quote!(crate::lptim::Channel2Pin)),
         (("lptim", "OUT"), quote!(crate::lptim::OutputPin)),
@@ -1864,7 +1876,7 @@ fn main() {
     }
 
     for (p, regs) in &peripheral_list {
-        if regs.kind == "adc" && regs.version == "f3v3" {
+        if regs.kind == "adc" && (regs.version == "f3v3" || regs.version == "wb1") {
             continue;
         }
 
@@ -2010,7 +2022,7 @@ fn main() {
             }
 
             fn parse_num(n: &str) -> Result<Frac, ()> {
-                for prefix in ["DIV", "MUL"] {
+                for prefix in ["Div", "Mul"] {
                     if let Some(n) = n.strip_prefix(prefix) {
                         let exponent = n.find('_').map(|e| n.len() - 1 - e).unwrap_or(0) as u32;
                         let mantissa = n.replace('_', "").parse().map_err(|_| ())?;

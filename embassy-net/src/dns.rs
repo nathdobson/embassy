@@ -8,21 +8,17 @@ use heapless::Vec;
 pub use smoltcp::socket::dns::{DnsQuery, Socket};
 pub(crate) use smoltcp::socket::dns::{GetQueryResultError, StartQueryError};
 pub use smoltcp::wire::{DnsQueryType, IpAddress};
-use thiserror::Error;
 use crate::Stack;
 
 /// Errors returned by DnsSocket.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     /// Invalid name
-    #[error("invalid name")]
     InvalidName,
     /// Name too long
-    #[error("name too long")]
     NameTooLong,
     /// Name lookup failed
-    #[error("name lookup failed")]
     Failed,
 }
 
@@ -121,3 +117,14 @@ impl<'a> embedded_nal_async::Dns for DnsSocket<'a> {
 fn _assert_covariant<'a, 'b: 'a>(x: DnsSocket<'b>) -> DnsSocket<'a> {
     x
 }
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidName => f.write_str("InvalidName"),
+            Self::NameTooLong => f.write_str("NameTooLong"),
+            Self::Failed => f.write_str("Failed"),
+        }
+    }
+}
+impl core::error::Error for Error {}
