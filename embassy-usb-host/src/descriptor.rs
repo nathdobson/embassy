@@ -266,6 +266,49 @@ impl USBDescriptor for ConfigurationDescriptor<'_> {
     }
 }
 
+/// A chain of descriptors.
+///
+/// Holds the current descriptor and a reference to the bytes after the descriptor.
+/// Deferences to the descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DescriptorChain<'a, T> {
+    /// The current descriptor.
+    pub descriptor: T,
+    /// The raw bytes following the descriptor.
+    pub buffer: &'a [u8],
+}
+
+impl<T> Copy for DescriptorChain<'_, T> where T: Copy {}
+
+#[cfg(feature = "defmt")]
+impl<T> defmt::Format for DescriptorChain<'_, T>
+where
+    T: defmt::Format,
+{
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "DescriptorChain<{}>{{descriptor: {}, buffer: {=[u8]}}}",
+            core::any::type_name::<T>(),
+            self.descriptor,
+            self.buffer
+        )
+    }
+}
+
+impl<'a, T> core::ops::Deref for DescriptorChain<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.descriptor
+    }
+}
+
+impl<'a, T> core::ops::DerefMut for DescriptorChain<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.descriptor
+    }
+}
+
 impl<'a> ConfigurationDescriptor<'a> {
     /// Parse a full Configuration Descriptor blob, giving access to sub-descriptors via iterators.
     pub fn try_from_slice(buf: &'a [u8]) -> Result<Self, HostError> {
