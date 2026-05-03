@@ -115,25 +115,28 @@ pub trait ExtendableDescriptor: USBDescriptor {
     }
 }
 
-/// First 8 bytes of the DeviceDescriptor, used to read `max_packet_size0` before SET_ADDRESS.
-#[derive(Debug)]
+/// Partial version of [DeviceDescriptor].
+///
+/// This descriptor is used to read `max_packet_size0` before SET_ADDRESS.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DeviceDescriptorPartial {
-    _padding: [u8; 7],
     pub max_packet_size0: u8,
 }
 
-impl USBDescriptor for DeviceDescriptorPartial {
-    const BUF_SIZE: usize = 8;
-    const DESC_TYPE: u8 = descriptor_type::DEVICE;
-    type Error = ();
+impl ExtendableDescriptor for DeviceDescriptorPartial {
+    const MIN_LEN: u8 = DeviceDescriptor::MIN_LEN;
+}
 
-    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
-            return Err(());
-        }
+impl USBDescriptor for DeviceDescriptorPartial {
+    // `max_packet_size0` is at byte 7.
+    const BUF_SIZE: usize = 8;
+    const DESC_TYPE: u8 = DeviceDescriptor::DESC_TYPE;
+    type Error = DescriptorError;
+
+    fn try_from_bytes(buf: &[u8]) -> Result<Self, Self::Error> {
+        Self::match_bytes(buf)?;
         Ok(Self {
-            _padding: [0; 7],
-            max_packet_size0: bytes[7],
+            max_packet_size0: buf[7],
         })
     }
 }
