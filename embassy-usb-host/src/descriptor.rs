@@ -453,21 +453,64 @@ impl<'a> DescriptorVisitor<'a> for ShowDescriptors {
     }
 }
 
-/// USB Interface Descriptor with a reference to the trailing sub-descriptor buffer.
-#[derive(Copy, Clone, Debug)]
+/// Standard USB Interface Descriptor.
+///
+/// A configuration provides one or more interfaces. (USB 2.0 §9.6.5)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InterfaceDescriptor<'a> {
-    pub len: u8,
-    pub descriptor_type: u8,
+    /// Interface index in this configuration (0-based).
     pub interface_number: u8,
+    /// Alternate setting ID of this interface.
     pub alternate_setting: u8,
+    /// Number of endpoints used by this interface.
     pub num_endpoints: u8,
+    /// Class code.
+    ///
+    /// If the class is 0, then the behavior is undefined (value is reserved).
+    ///
+    /// If the class is 0xff, then the interface class is vendor-specific.
     pub interface_class: u8,
+    /// Subclass code.
+    ///
+    /// If the class is 0, then the subclass must be 0.
+    ///
+    /// If the subclass is 0xff, then the interface subclass is vendor-specific.
     pub interface_subclass: u8,
+    /// Protocol code.
+    ///
+    /// If the protocol is 0, then there is no class-specific interface protocol.
+    ///
+    /// If the protocol is 0xff, then the interface protocol is vendor-specific.
     pub interface_protocol: u8,
+    /// Interface string.
     pub interface_name: StringIndex,
     /// All bytes following this descriptor up to (but not including) the next interface descriptor.
     pub buffer: &'a [u8],
+}
+
+impl ExtendableDescriptor for InterfaceDescriptor<'_> {
+    const MIN_LEN: u8 = 9;
+}
+
+impl USBDescriptor for InterfaceDescriptor<'_> {
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
+    const DESC_TYPE: u8 = descriptor_type::INTERFACE;
+    type Error = DescriptorError;
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::match_bytes(bytes)?;
+        Ok(Self {
+            interface_number: bytes[2],
+            alternate_setting: bytes[3],
+            num_endpoints: bytes[4],
+            interface_class: bytes[5],
+            interface_subclass: bytes[6],
+            interface_protocol: bytes[7],
+            interface_name: bytes[8],
+            buffer: &[],
+        })
+    }
 }
 
 impl<'a> InterfaceDescriptor<'a> {
@@ -487,8 +530,6 @@ impl<'a> InterfaceDescriptor<'a> {
             .find_map(|(index, v)| v.get(1).is_some_and(|v| *v == Self::DESC_TYPE).then_some(index))
             .unwrap_or(endpoints.len());
         Ok(Self {
-            len: bytes[0],
-            descriptor_type: bytes[1],
             interface_number: bytes[2],
             alternate_setting: bytes[3],
             num_endpoints: bytes[4],
@@ -533,7 +574,7 @@ impl<'a> Iterator for InterfaceIterator<'a> {
         }
         let remaining = &self.cfg_desc.buffer[self.offset..];
         let iface = InterfaceDescriptor::try_from_bytes(remaining).ok()?;
-        self.offset += iface.len as usize + iface.buffer.len();
+        self.offset += remaining[0] as usize + iface.buffer.len();
         Some(iface)
     }
 }

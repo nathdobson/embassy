@@ -306,10 +306,6 @@ impl InterfaceAssociationDescriptor {
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InterfaceDescriptor {
-    /// Length of this descriptor in bytes.
-    pub len: u8,
-    /// Type of this descriptor. Must be 0x04.
-    pub descriptor_type: u8,
     /// Number of this interface.
     pub interface_number: u8,
     /// Value used to select this alternate setting for the interface.
@@ -329,8 +325,6 @@ pub struct InterfaceDescriptor {
 impl From<&GenericInterfaceDescriptor<'_>> for InterfaceDescriptor {
     fn from(g: &GenericInterfaceDescriptor<'_>) -> Self {
         Self {
-            len: g.len,
-            descriptor_type: g.descriptor_type,
             interface_number: g.interface_number,
             alternate_setting: g.alternate_setting,
             num_endpoints: g.num_endpoints,
@@ -1446,8 +1440,6 @@ mod test {
             },
             control_interface: AudioControlInterface {
                 interface_descriptors: Vec::from_slice(&[InterfaceDescriptor {
-                    len: 9,
-                    descriptor_type: 4,
                     interface_number: 0,
                     alternate_setting: 0,
                     num_endpoints: 0,
@@ -1471,8 +1463,6 @@ mod test {
                 AudioStreamingInterface {
                     interface_descriptors: Vec::from_slice(&[
                         InterfaceDescriptor {
-                            len: 9,
-                            descriptor_type: 4,
                             interface_number: 1,
                             alternate_setting: 0,
                             num_endpoints: 0,
@@ -1482,8 +1472,6 @@ mod test {
                             interface_name: 8,
                         },
                         InterfaceDescriptor {
-                            len: 9,
-                            descriptor_type: 4,
                             interface_number: 1,
                             alternate_setting: 1,
                             num_endpoints: 2,
@@ -1532,8 +1520,6 @@ mod test {
                 AudioStreamingInterface {
                     interface_descriptors: Vec::from_slice(&[
                         InterfaceDescriptor {
-                            len: 9,
-                            descriptor_type: 4,
                             interface_number: 2,
                             alternate_setting: 0,
                             num_endpoints: 0,
@@ -1543,8 +1529,6 @@ mod test {
                             interface_name: 10,
                         },
                         InterfaceDescriptor {
-                            len: 9,
-                            descriptor_type: 4,
                             interface_number: 2,
                             alternate_setting: 1,
                             num_endpoints: 1,
