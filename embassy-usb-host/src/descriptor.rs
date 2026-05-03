@@ -56,6 +56,8 @@ pub trait USBDescriptor {
 /// Fixed size descriptor.
 ///
 /// Implementors of this trait only allow the correct size while reading or writing.
+///
+/// If you are not sure that the length is always the same, implement [ExtendableDescriptor] instead.
 pub trait FixedSizeDescriptor: USBDescriptor {
     /// Length of the descriptor.
     ///
@@ -71,6 +73,36 @@ pub trait FixedSizeDescriptor: USBDescriptor {
         if bytes.len() < Self::LEN as usize {
             Err(DescriptorError::UnexpectedEndOfBuffer)
         } else if bytes[0] != Self::LEN {
+            Err(DescriptorError::BadDescriptorSize)
+        } else if bytes[1] != Self::DESC_TYPE {
+            Err(DescriptorError::BadDescriptorType)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Extendable fixed size descriptor.
+///
+/// Implementors of this trait allow extra bytes in the descriptor while reading or writing.
+/// The origin and purpose of the extra bytes is undefined, it might be a class extension,
+/// a vendor extension, or anything else.
+pub trait ExtendableDescriptor: USBDescriptor {
+    /// Minimum length of the descriptor.
+    ///
+    /// This value is compared against byte 0 of the buffer.
+    /// All bytes after this length are considered an extension of the descriptor.
+    const MIN_LEN: u8;
+
+    /// Matches `bytes` with this descriptor.
+    ///
+    /// On success it returns `Ok(())`.
+    /// On error it returns a [DescriptorError].
+    #[inline(always)]
+    fn match_bytes(bytes: &[u8]) -> Result<(), DescriptorError> {
+        if bytes.len() < Self::MIN_LEN as usize {
+            Err(DescriptorError::UnexpectedEndOfBuffer)
+        } else if bytes[0] < Self::MIN_LEN {
             Err(DescriptorError::BadDescriptorSize)
         } else if bytes[1] != Self::DESC_TYPE {
             Err(DescriptorError::BadDescriptorType)
