@@ -223,7 +223,7 @@ impl USBDescriptor for DeviceDescriptor {
 /// When a configuration descriptor is requested, all related descriptors are returned. (USB 2.0 §9.6.3)
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ConfigurationDescriptor<'a> {
+pub struct ConfigurationDescriptor {
     /// Total length of data returned for this configuration.
     ///
     /// The data includes this descriptor, interface descriptors,
@@ -239,15 +239,13 @@ pub struct ConfigurationDescriptor<'a> {
     pub attributes: u8,
     /// Maximum bus power that will be consumed in 2mA units.
     pub max_power: u8,
-    /// The raw bytes following the 9-byte header (interface + endpoint descriptors).
-    pub buffer: &'a [u8],
 }
 
-impl ExtendableDescriptor for ConfigurationDescriptor<'_> {
+impl ExtendableDescriptor for ConfigurationDescriptor {
     const MIN_LEN: u8 = 9;
 }
 
-impl USBDescriptor for ConfigurationDescriptor<'_> {
+impl USBDescriptor for ConfigurationDescriptor {
     const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = descriptor_type::CONFIGURATION;
     type Error = DescriptorError;
@@ -261,7 +259,6 @@ impl USBDescriptor for ConfigurationDescriptor<'_> {
             configuration_name: bytes[6],
             attributes: bytes[7],
             max_power: bytes[8],
-            buffer: &[],
         })
     }
 }
@@ -309,22 +306,23 @@ impl<'a, T> core::ops::DerefMut for DescriptorChain<'a, T> {
     }
 }
 
-impl<'a> ConfigurationDescriptor<'a> {
+/// The chain of descriptors of a [ConfigurationDescriptor].
+///
+/// When you request the configuration descriptor of a usb device you get a chain of descriptors (USB 2.0 §9.6.3).
+/// The chain includes interface descriptors, endpoint descriptors, and possibly other descriptors.
+///
+/// The total length of the chain is in [ConfigurationDescriptor::total_len].
+pub type ConfigurationDescriptorChain<'a> = DescriptorChain<'a, ConfigurationDescriptor>;
+
+impl<'a> ConfigurationDescriptorChain<'a> {
     /// Parse a full Configuration Descriptor blob, giving access to sub-descriptors via iterators.
     pub fn try_from_slice(buf: &'a [u8]) -> Result<Self, HostError> {
-        if buf.len() < Self::BUF_SIZE || buf[1] != Self::DESC_TYPE {
-            return Err(HostError::InvalidDescriptor);
+        let descriptor = ConfigurationDescriptor::try_from_bytes(buf).map_err(|_| HostError::InvalidDescriptor)?;
+        if let Some(buffer) = buf.get(buf[0] as usize..descriptor.total_len as usize) {
+            Ok(Self { descriptor, buffer })
+        } else {
+            Err(HostError::InvalidDescriptor)
         }
-        let total_length = u16::from_le_bytes([buf[2], buf[3]]);
-        Ok(Self {
-            total_len: total_length,
-            num_interfaces: buf[4],
-            configuration_value: buf[5],
-            configuration_name: buf[6],
-            attributes: buf[7],
-            max_power: buf[8],
-            buffer: &buf[buf[0] as usize..total_length as usize],
-        })
     }
 
     /// Iterate over all raw descriptors in this Configuration.
@@ -401,7 +399,7 @@ pub trait DescriptorVisitor<'a> {
     type Error;
 
     /// Return `false` to stop iteration early
-    fn on_configuration(&mut self, _c: &ConfigurationDescriptor<'a>) -> bool {
+    fn on_configuration(&mut self, _c: &ConfigurationDescriptor) -> bool {
         true
     }
 
@@ -523,7 +521,7 @@ impl<'a> InterfaceDescriptor<'a> {
 /// Iterates over the InterfaceDescriptors of a configuration.
 pub struct InterfaceIterator<'a> {
     offset: usize,
-    cfg_desc: &'a ConfigurationDescriptor<'a>,
+    cfg_desc: &'a ConfigurationDescriptorChain<'a>,
 }
 
 impl<'a> Iterator for InterfaceIterator<'a> {
@@ -677,8 +675,7 @@ impl From<EndpointDescriptor> for EndpointInfo {
 mod test {
     use heapless::Vec;
 
-    use super::{ConfigurationDescriptor, DescriptorVisitor, EndpointDescriptor, InterfaceDescriptor};
-    use crate::descriptor::ShowDescriptors;
+    use super::*;
 
     struct TestInterface<'a> {
         interface: InterfaceDescriptor<'a>,
@@ -690,7 +687,7 @@ mod test {
     const MAX_OTHERS: usize = 8;
 
     struct TestVisitor<'a> {
-        configuration: Option<ConfigurationDescriptor<'a>>,
+        configuration: Option<ConfigurationDescriptor>,
         interfaces: Vec<TestInterface<'a>, MAX_INTERFACES>,
         others: Vec<Vec<u8, MAX_DESCRIPTOR_SIZE>, MAX_OTHERS>,
     }
@@ -708,7 +705,7 @@ mod test {
     impl<'a> DescriptorVisitor<'a> for TestVisitor<'a> {
         type Error = core::convert::Infallible;
 
-        fn on_configuration(&mut self, c: &ConfigurationDescriptor<'a>) -> bool {
+        fn on_configuration(&mut self, c: &ConfigurationDescriptor) -> bool {
             assert!(self.configuration.is_none());
             self.configuration = Some(*c);
             true
@@ -744,7 +741,7 @@ mod test {
             3, 64, 0, 1, 7, 5, 3, 3, 64, 0, 1,
         ];
 
-        let cfg = ConfigurationDescriptor::try_from_slice(desc_bytes.as_slice()).unwrap();
+        let cfg = ConfigurationDescriptorChain::try_from_slice(desc_bytes.as_slice()).unwrap();
         assert_eq!(cfg.num_interfaces, 2);
 
         let interface0 = cfg.iter_interface().next().unwrap();
@@ -772,7 +769,7 @@ mod test {
             1,
         ];
 
-        let cfg = ConfigurationDescriptor::try_from_slice(desc_bytes.as_slice()).unwrap();
+        let cfg = ConfigurationDescriptorChain::try_from_slice(desc_bytes.as_slice()).unwrap();
         assert_eq!(cfg.num_interfaces, 2);
 
         let interface0 = cfg.iter_interface().next().unwrap();
@@ -800,7 +797,7 @@ mod test {
             4, 1, 1, 1, 0, 9, 5, 2, 2, 32, 0, 0, 0, 0, 5, 37, 1, 1, 1, 9, 5, 129, 2, 32, 0, 0, 0, 0, 5, 37, 1, 1, 3,
         ];
 
-        let cfg = ConfigurationDescriptor::try_from_slice(desc_bytes.as_slice()).unwrap();
+        let cfg = ConfigurationDescriptorChain::try_from_slice(desc_bytes.as_slice()).unwrap();
         assert_eq!(cfg.num_interfaces, 2);
 
         let mut v = TestVisitor::default();

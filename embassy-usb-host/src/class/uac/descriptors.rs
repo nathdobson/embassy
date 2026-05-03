@@ -6,8 +6,8 @@ use heapless::index_map::FnvIndexMap;
 use super::codes::*;
 use crate::descriptor::descriptor_type::{CS_ENDPOINT, CS_INTERFACE, INTERFACE_ASSOCIATION};
 use crate::descriptor::{
-    ConfigurationDescriptor, DescriptorVisitor, EndpointDescriptor, InterfaceDescriptor as GenericInterfaceDescriptor,
-    StringIndex, USBDescriptor, VisitError,
+    ConfigurationDescriptorChain, DescriptorVisitor, EndpointDescriptor,
+    InterfaceDescriptor as GenericInterfaceDescriptor, StringIndex, USBDescriptor, VisitError,
 };
 
 const MAX_AUDIO_STREAMING_INTERFACES: usize = 16;
@@ -241,7 +241,7 @@ impl AudioInterfaceCollection {
     /// then parses the control interface and all streaming interfaces.
     ///
     /// Returns an [`AudioInterfaceCollection`] on success, or an [`AudioInterfaceError`] if parsing fails.
-    pub fn try_from_configuration(cfg: &ConfigurationDescriptor) -> Result<Self, AudioInterfaceError> {
+    pub fn try_from_configuration(cfg: &ConfigurationDescriptorChain) -> Result<Self, AudioInterfaceError> {
         let mut builder = AudioCollectionBuilder::new();
         cfg.visit_descriptors(&mut builder).map_err(|e| match e {
             VisitError::BadDescriptor => AudioInterfaceError::InvalidDescriptor,
@@ -1342,13 +1342,15 @@ mod test {
             7, 33, 7, 250, 0, 64, 0, // DFU Functional Descriptor
         ];
         buffer[..descriptors.len()].copy_from_slice(&descriptors);
-        let descriptor = ConfigurationDescriptor {
-            total_len: 0,
-            num_interfaces: 0,
-            configuration_value: 1,
-            configuration_name: 0,
-            attributes: 0,
-            max_power: 0,
+        let descriptor = ConfigurationDescriptorChain {
+            descriptor: ConfigurationDescriptor {
+                total_len: 0,
+                num_interfaces: 0,
+                configuration_value: 1,
+                configuration_name: 0,
+                attributes: 0,
+                max_power: 0,
+            },
             buffer: &buffer,
         };
         let mut expected_clock_descriptors = FnvIndexMap::<u8, ClockDescriptor, MAX_CLOCK_DESCRIPTORS>::new();
