@@ -40,7 +40,11 @@ pub enum VisitError<E> {
 
 /// Trait for fixed-size USB descriptors that can be parsed from a byte slice.
 pub trait USBDescriptor {
-    const SIZE: usize;
+    /// Size of the byte buffer.
+    ///
+    /// This is the size of the byte buffer that should be used to read or write the descriptor.
+    /// This is not the size of the descriptor.
+    const BUF_SIZE: usize;
     const DESC_TYPE: u8;
     type Error;
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error>
@@ -56,12 +60,12 @@ pub struct DeviceDescriptorPartial {
 }
 
 impl USBDescriptor for DeviceDescriptorPartial {
-    const SIZE: usize = 8;
+    const BUF_SIZE: usize = 8;
     const DESC_TYPE: u8 = descriptor_type::DEVICE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE || bytes[1] != Self::DESC_TYPE {
+        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
             return Err(());
         }
         Ok(Self {
@@ -92,12 +96,12 @@ pub struct DeviceDescriptor {
 }
 
 impl USBDescriptor for DeviceDescriptor {
-    const SIZE: usize = 18;
+    const BUF_SIZE: usize = 18;
     const DESC_TYPE: u8 = descriptor_type::DEVICE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE || bytes[1] != Self::DESC_TYPE {
+        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
             return Err(());
         }
         Ok(Self {
@@ -136,12 +140,12 @@ pub struct ConfigurationDescriptor<'a> {
 }
 
 impl USBDescriptor for ConfigurationDescriptor<'_> {
-    const SIZE: usize = 9;
+    const BUF_SIZE: usize = 9;
     const DESC_TYPE: u8 = descriptor_type::CONFIGURATION;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE || bytes[1] != Self::DESC_TYPE {
+        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
             return Err(());
         }
         Ok(Self {
@@ -161,7 +165,7 @@ impl USBDescriptor for ConfigurationDescriptor<'_> {
 impl<'a> ConfigurationDescriptor<'a> {
     /// Parse a full Configuration Descriptor blob, giving access to sub-descriptors via iterators.
     pub fn try_from_slice(buf: &'a [u8]) -> Result<Self, HostError> {
-        if buf.len() < Self::SIZE || buf[1] != Self::DESC_TYPE {
+        if buf.len() < Self::BUF_SIZE || buf[1] != Self::DESC_TYPE {
             return Err(HostError::InvalidDescriptor);
         }
         let total_length = u16::from_le_bytes([buf[2], buf[3]]);
@@ -324,11 +328,11 @@ pub struct InterfaceDescriptor<'a> {
 }
 
 impl<'a> InterfaceDescriptor<'a> {
-    const SIZE: usize = 9;
+    const BUF_SIZE: usize = 9;
     const DESC_TYPE: u8 = descriptor_type::INTERFACE;
 
     pub(crate) fn try_from_bytes(bytes: &'a [u8]) -> Result<Self, ()> {
-        if bytes.len() < Self::SIZE || bytes[1] != Self::DESC_TYPE {
+        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
             return Err(());
         }
         let endpoints = &bytes[bytes[0] as usize..];
@@ -491,12 +495,12 @@ impl EndpointDescriptor {
 }
 
 impl USBDescriptor for EndpointDescriptor {
-    const SIZE: usize = 7;
+    const BUF_SIZE: usize = 7;
     const DESC_TYPE: u8 = descriptor_type::ENDPOINT;
     type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE || bytes.len() < bytes[0] as usize {
+        if bytes.len() < Self::BUF_SIZE || bytes.len() < bytes[0] as usize {
             return Err(DescriptorError::UnexpectedEndOfBuffer);
         }
         if bytes[1] != Self::DESC_TYPE {

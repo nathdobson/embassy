@@ -112,7 +112,7 @@ impl EnumerationInfo {
         let mut cfg_len = 0;
         for i in 0..self.device_desc.num_configurations {
             let cfg_desc_short = channel
-                .request_descriptor::<ConfigurationDescriptor, { ConfigurationDescriptor::SIZE }>(i, false)
+                .request_descriptor::<ConfigurationDescriptor, { ConfigurationDescriptor::BUF_SIZE }>(i, false)
                 .await?;
 
             if cfg_desc_short.configuration_value == cfg_id {
@@ -147,7 +147,7 @@ impl EnumerationInfo {
         }
 
         let cfg_desc_short = channel
-            .request_descriptor::<ConfigurationDescriptor, { ConfigurationDescriptor::SIZE }>(index, false)
+            .request_descriptor::<ConfigurationDescriptor, { ConfigurationDescriptor::BUF_SIZE }>(index, false)
             .await?;
 
         let total_len = cfg_desc_short.total_len as usize;

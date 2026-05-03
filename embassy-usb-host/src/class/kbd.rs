@@ -163,12 +163,12 @@ pub struct HIDDescriptor {
 }
 
 impl USBDescriptor for HIDDescriptor {
-    const SIZE: usize = 9;
+    const BUF_SIZE: usize = 9;
     const DESC_TYPE: u8 = 33;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE || bytes[1] != Self::DESC_TYPE {
+        if bytes.len() < Self::BUF_SIZE || bytes[1] != Self::DESC_TYPE {
             return Err(());
         }
         Ok(Self {

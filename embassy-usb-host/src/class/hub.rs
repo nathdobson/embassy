@@ -380,7 +380,7 @@ struct HubDescriptor {
 }
 
 impl USBDescriptor for HubDescriptor {
-    const SIZE: usize = core::mem::size_of::<Self>();
+    const BUF_SIZE: usize = core::mem::size_of::<Self>();
     const DESC_TYPE: u8 = 0x29;
     type Error = ();
 

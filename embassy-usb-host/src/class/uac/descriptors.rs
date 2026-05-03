@@ -273,12 +273,12 @@ pub struct InterfaceAssociationDescriptor {
 }
 
 impl USBDescriptor for InterfaceAssociationDescriptor {
-    const SIZE: usize = 8;
+    const BUF_SIZE: usize = 8;
     const DESC_TYPE: u8 = INTERFACE_ASSOCIATION;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -431,12 +431,12 @@ pub struct AudioControlHeaderDescriptor {
 }
 
 impl USBDescriptor for AudioControlHeaderDescriptor {
-    const SIZE: usize = 9;
+    const BUF_SIZE: usize = 9;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -508,12 +508,12 @@ pub struct ClockSourceDescriptor {
 }
 
 impl USBDescriptor for ClockSourceDescriptor {
-    const SIZE: usize = 8;
+    const BUF_SIZE: usize = 8;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = AudioInterfaceError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(AudioInterfaceError::InvalidDescriptor);
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -588,12 +588,12 @@ pub struct ClockMultiplierDescriptor {
 }
 
 impl USBDescriptor for ClockMultiplierDescriptor {
-    const SIZE: usize = 7;
+    const BUF_SIZE: usize = 7;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = AudioInterfaceError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, AudioInterfaceError> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(AudioInterfaceError::InvalidDescriptor);
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -841,12 +841,12 @@ pub struct InputTerminalDescriptor {
 }
 
 impl USBDescriptor for InputTerminalDescriptor {
-    const SIZE: usize = 17;
+    const BUF_SIZE: usize = 17;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() != Self::SIZE {
+        if bytes.len() != Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -890,12 +890,12 @@ pub struct OutputTerminalDescriptor {
 }
 
 impl USBDescriptor for OutputTerminalDescriptor {
-    const SIZE: usize = 12;
+    const BUF_SIZE: usize = 12;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() != Self::SIZE {
+        if bytes.len() != Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -937,12 +937,12 @@ pub enum UnitDescriptor {
 }
 
 impl USBDescriptor for UnitDescriptor {
-    const SIZE: usize = 4; // This is not the true size; Will become variable
+    const BUF_SIZE: usize = 4; // This is not the true size; Will become variable
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -1036,12 +1036,12 @@ pub struct AudioStreamingClassDescriptor {
 }
 
 impl USBDescriptor for AudioStreamingClassDescriptor {
-    const SIZE: usize = 16;
+    const BUF_SIZE: usize = 16;
     const DESC_TYPE: u8 = CS_INTERFACE;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
@@ -1082,12 +1082,12 @@ pub struct AudioEndpointDescriptor {
 }
 
 impl USBDescriptor for AudioEndpointDescriptor {
-    const SIZE: usize = 6;
+    const BUF_SIZE: usize = 6;
     const DESC_TYPE: u8 = descriptor_type::CS_ENDPOINT;
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::SIZE {
+        if bytes.len() < Self::BUF_SIZE {
             return Err(());
         }
         if bytes[1] != Self::DESC_TYPE {
