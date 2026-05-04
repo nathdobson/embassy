@@ -107,7 +107,7 @@ alloc = ["smoltcp/alloc"]
 defmt = { version = "1.0.1", optional = true }
 log = { version = "0.4.14", optional = true }
 
-smoltcp = {  version = "0.13.0", default-features = false, features = [
+smoltcp = {  path="../../smoltcp", default-features = false, features = [
   "socket",
   "async",
 ] }
@@ -118,7 +118,7 @@ embassy-sync = { version = "0.8.0", path = "../embassy-sync" }
 embedded-io-async = { version = "0.7.0" }
 
 managed = { version = "0.8.0", default-features = false, features = [ "map" ] }
-heapless = { version = "0.9", default-features = false }
+heapless = { path="../../heapless", default-features = false }
 embedded-nal-async = "0.9.0"
 document-features = "0.2.7"
 thiserror = {version = "2.0.18",default-features = false}
