@@ -29,6 +29,7 @@ pub(crate) const DEFAULT_MAX_DESCRIPTOR_SIZE: usize = 512;
 pub enum DescriptorError {
     BadDescriptorSize,
     BadDescriptorType,
+    NotImplemented,
     UnexpectedEndOfBuffer,
 }
 
