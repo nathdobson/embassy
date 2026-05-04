@@ -70,7 +70,7 @@ use core::sync::atomic::AtomicU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use pac::clocks::vals::*;
-
+use rand_core_06::RngCore;
 use crate::gpio::{AnyPin, SealedPin};
 use crate::pac::common::{RW, Reg};
 use crate::{Peri, pac, reset};
@@ -1802,18 +1802,32 @@ impl RoscRng {
 
     /// Get a random u32
     pub fn next_u32(&mut self) -> u32 {
-        rand_core_09::impls::next_u32_via_fill(self)
+        next_u32_via_fill(self)
     }
 
     /// Get a random u64
     pub fn next_u64(&mut self) -> u64 {
-        rand_core_09::impls::next_u64_via_fill(self)
+        next_u64_via_fill(self)
     }
 
     /// Fill a slice with random bytes
     pub fn fill_bytes(&mut self, dest: &mut [u8]) {
         dest.fill_with(Self::next_u8)
     }
+}
+
+/// Implement `next_u32` via `fill_bytes`, little-endian order.
+pub fn next_u32_via_fill<R: RngCore + ?Sized>(rng: &mut R) -> u32 {
+    let mut buf = [0; 4];
+    rng.fill_bytes(&mut buf);
+    u32::from_le_bytes(buf)
+}
+
+/// Implement `next_u64` via `fill_bytes`, little-endian order.
+pub fn next_u64_via_fill<R: RngCore + ?Sized>(rng: &mut R) -> u64 {
+    let mut buf = [0; 8];
+    rng.fill_bytes(&mut buf);
+    u64::from_le_bytes(buf)
 }
 
 impl rand_core_06::RngCore for RoscRng {
@@ -1836,41 +1850,6 @@ impl rand_core_06::RngCore for RoscRng {
 }
 
 impl rand_core_06::CryptoRng for RoscRng {}
-
-impl rand_core_09::RngCore for RoscRng {
-    fn next_u32(&mut self) -> u32 {
-        self.next_u32()
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.next_u64()
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.fill_bytes(dest);
-    }
-}
-
-impl rand_core_09::CryptoRng for RoscRng {}
-
-impl rand_core_10::TryRng for RoscRng {
-    type Error = core::convert::Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        Ok(self.next_u32())
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        Ok(self.next_u64())
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-
-impl rand_core_10::TryCryptoRng for RoscRng {}
 
 /// Enter the `DORMANT` sleep state. This will stop *all* internal clocks
 /// and can only be exited through resets, dormant-wake GPIO interrupts,
