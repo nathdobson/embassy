@@ -177,7 +177,7 @@ impl Config {
         Self {
             hsi: Some(Hsi {
                 pre: HsiPrescaler::Div1,
-                trim: HsiCalibration::from_bits(32),
+                trim: HsiCalibration::Zero,
             }),
             hse: None,
             msi: None,
