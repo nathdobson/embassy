@@ -24,6 +24,7 @@ pub(crate) const DEFAULT_MAX_DESCRIPTOR_SIZE: usize = 512;
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DescriptorError {
+    BadDescriptorSize,
     BadDescriptorType,
     UnexpectedEndOfBuffer,
 }
@@ -38,7 +39,7 @@ pub enum VisitError<E> {
     Visitor(E),
 }
 
-/// Trait for fixed-size USB descriptors that can be parsed from a byte slice.
+/// Trait for a USB descriptor that can be parsed from a byte slice.
 pub trait USBDescriptor {
     /// Size of the byte buffer.
     ///
@@ -50,6 +51,33 @@ pub trait USBDescriptor {
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error>
     where
         Self: Sized;
+}
+
+/// Fixed size descriptor.
+///
+/// Implementors of this trait only allow the correct size while reading or writing.
+pub trait FixedSizeDescriptor: USBDescriptor {
+    /// Length of the descriptor.
+    ///
+    /// This constant is compared against byte 0 of the buffer.
+    const LEN: u8;
+
+    /// Matches `bytes` with this descriptor.
+    ///
+    /// On success it returns `Ok(())`.
+    /// On error it returns a [DescriptorError].
+    #[inline(always)]
+    fn match_bytes(bytes: &[u8]) -> Result<(), DescriptorError> {
+        if bytes.len() < Self::LEN as usize {
+            Err(DescriptorError::UnexpectedEndOfBuffer)
+        } else if bytes[0] != Self::LEN {
+            Err(DescriptorError::BadDescriptorSize)
+        } else if bytes[1] != Self::DESC_TYPE {
+            Err(DescriptorError::BadDescriptorType)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// First 8 bytes of the DeviceDescriptor, used to read `max_packet_size0` before SET_ADDRESS.
