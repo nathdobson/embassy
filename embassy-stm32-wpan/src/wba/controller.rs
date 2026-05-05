@@ -5,6 +5,8 @@
 
 use core::cell::RefCell;
 use core::ops::Deref;
+#[cfg(feature = "bt-hci")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_stm32::aes::Aes;
 use embassy_stm32::interrupt;
@@ -19,7 +21,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(feature = "bt-hci")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel;
-use stm32_bindings::ble::{BleStack_Process, BleStack_Request};
+use stm32_bindings::ble::{BLE_SLEEPMODE_RUNNING, BleStack_Process, BleStack_Request};
 use stm32wb_hci::event::Packet;
 use stm32wb_hci::host::HciHeader;
 use stm32wb_hci::vendor::CommandHeader;
@@ -30,7 +32,7 @@ use crate::host_if::{MAX_BLE_PKT_SIZE, TASK_BLE_HOST_MASK, TASK_LINK_LAYER_MASK,
 use crate::linklayer_plat::{
     EVENT_CHANNEL, HARDWARE_AES, HARDWARE_PKA, HARDWARE_RNG, run_radio_high_isr, run_radio_sw_low_isr,
 };
-use crate::runner::{BLE_INIT, BLE_SLEEPMODE_RUNNING};
+use crate::runner::BLE_INIT;
 use crate::util_seq;
 use crate::wba::ll_sys::init_ble_stack;
 
@@ -66,7 +68,7 @@ unsafe extern "C" fn ble_stack_process_bg() {
 
     trace!("BleStack_Process called, result={}", result);
 
-    if result == BLE_SLEEPMODE_RUNNING {
+    if result == BLE_SLEEPMODE_RUNNING as u8 {
         // More work to do - re-queue
         util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
     }
@@ -109,29 +111,16 @@ impl ControllerState {
 }
 
 #[macro_export]
-macro_rules! declare_controller_state {
-    ($buf:ident, $state:ident, $size:expr) => {
-        static $buf: ::static_cell::StaticCell<[::embassy_stm32_wpan::ChannelPacket; $size]> =
-            ::static_cell::StaticCell::new();
-        static $state: ::static_cell::StaticCell<::embassy_stm32_wpan::ControllerState> =
-            ::static_cell::StaticCell::new();
-    };
-}
-
-#[macro_export]
-macro_rules! use_controller_state {
-    ($buf:ident, $state:ident, $size:expr) => {{
-        $state.init(::embassy_stm32_wpan::ControllerState::new(
-            $buf.init([::embassy_stm32_wpan::ChannelPacket::default(); $size]),
-        ))
-    }};
-}
-
-#[macro_export]
 macro_rules! new_controller_state {
     ($size:expr) => {{
-        ::embassy_stm32_wpan::declare_controller_state!(EVENT_BUFFER, EVENT_STATE, $size);
-        ::embassy_stm32_wpan::use_controller_state!(EVENT_BUFFER, EVENT_STATE, $size)
+        static EVENT_BUFFER: ::static_cell::StaticCell<[::embassy_stm32_wpan::ChannelPacket; $size]> =
+            ::static_cell::StaticCell::new();
+        static EVENT_STATE: ::static_cell::StaticCell<::embassy_stm32_wpan::ControllerState> =
+            ::static_cell::StaticCell::new();
+
+        EVENT_STATE.init(::embassy_stm32_wpan::ControllerState::new(
+            EVENT_BUFFER.init([::embassy_stm32_wpan::ChannelPacket::default(); $size]),
+        ))
     }};
 }
 
@@ -279,6 +268,7 @@ const ERR: bt_hci::cmd::Error<embedded_io::ErrorKind> = bt_hci::cmd::Error::Io(e
 #[cfg(feature = "bt-hci")]
 pub struct AtomicController {
     controller: NoopMutex<RefCell<Controller>>,
+    pending_evt: AtomicBool,
 }
 
 #[cfg(feature = "bt-hci")]
@@ -286,6 +276,7 @@ impl AtomicController {
     pub const fn new(controller: Controller) -> Self {
         Self {
             controller: Mutex::const_new(NoopRawMutex::new(), RefCell::new(controller)),
+            pending_evt: AtomicBool::new(false),
         }
     }
 }
@@ -327,29 +318,37 @@ impl bt_hci::controller::Controller for AtomicController {
         })
     }
 
-    async fn read<'a>(&self, buf: &'a mut [u8]) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
+    async fn read<'a>(&self, _buf: &'a mut [u8]) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
         use core::future::poll_fn;
         use core::task::Poll;
 
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
 
-        // TODO: install buffer so that Linklayer_Plat copies directly into buffer rather than going through the channel
+        if self.pending_evt.swap(false, Ordering::AcqRel) {
+            // Advance the channel
+            self.controller
+                .borrow()
+                .borrow_mut()
+                .receiver
+                .try_receive()
+                .unwrap()
+                .receive_done();
+        }
 
-        let len = poll_fn(|cx| {
+        let buf = poll_fn(|cx| {
             let mut controller = self.controller.borrow().borrow_mut();
 
             let Poll::Ready(slot) = controller.receiver.poll_receive(cx) else {
                 return Poll::Pending;
             };
 
-            // Must copy to extend the lifetime
-            buf[..*&slot.len()].copy_from_slice(&slot);
+            self.pending_evt.store(true, Ordering::Release);
 
-            Poll::Ready(*&slot.len())
+            Poll::Ready(unsafe { core::slice::from_raw_parts(&slot.0 as *const _ as *const u8, slot.1) })
         })
         .await;
 
-        ControllerToHostPacket::from_hci_bytes_complete(&buf[..len]).map_err(|_| embedded_io::ErrorKind::InvalidData)
+        ControllerToHostPacket::from_hci_bytes_complete(&buf).map_err(|_| embedded_io::ErrorKind::InvalidData)
     }
 }
 
