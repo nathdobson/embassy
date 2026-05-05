@@ -324,19 +324,13 @@ impl bt_hci::controller::Controller for AtomicController {
 
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
 
-        if self.pending_evt.swap(false, Ordering::AcqRel) {
-            // Advance the channel
-            self.controller
-                .borrow()
-                .borrow_mut()
-                .receiver
-                .try_receive()
-                .unwrap()
-                .receive_done();
-        }
-
         let buf = poll_fn(|cx| {
             let mut controller = self.controller.borrow().borrow_mut();
+
+            if self.pending_evt.swap(false, Ordering::AcqRel) {
+                // Advance the channel
+                controller.receiver.try_receive().unwrap().receive_done();
+            }
 
             let Poll::Ready(slot) = controller.receiver.poll_receive(cx) else {
                 return Poll::Pending;
