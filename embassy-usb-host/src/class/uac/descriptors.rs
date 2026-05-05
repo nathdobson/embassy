@@ -7,7 +7,7 @@ use super::codes::*;
 use crate::descriptor::descriptor_type::{CS_ENDPOINT, CS_INTERFACE, INTERFACE_ASSOCIATION};
 use crate::descriptor::{
     ConfigurationDescriptorChain, DescriptorError, DescriptorVisitor, EndpointDescriptor, ExtendableDescriptor,
-    InterfaceDescriptorChain, StringIndex, USBDescriptor, VisitError,
+    InterfaceDescriptor, InterfaceDescriptorChain, StringIndex, USBDescriptor, VisitError,
 };
 
 const MAX_AUDIO_STREAMING_INTERFACES: usize = 16;
@@ -298,40 +298,6 @@ impl InterfaceAssociationDescriptor {
     /// Returns true if this interface association is for an audio function.
     pub fn is_audio_association(&self) -> bool {
         self.class == AUDIO_FUNCTION && self.protocol == function_protocol::AF_VERSION_02_00
-    }
-}
-
-/// USB interface descriptor for audio interfaces.
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct InterfaceDescriptor {
-    /// Number of this interface.
-    pub interface_number: u8,
-    /// Value used to select this alternate setting for the interface.
-    pub alternate_setting: u8,
-    /// Number of endpoints used by this interface.
-    pub num_endpoints: u8,
-    /// USB interface class code.
-    pub interface_class: u8,
-    /// USB interface subclass code.
-    pub interface_subclass: u8,
-    /// USB interface protocol code.
-    pub interface_protocol: u8,
-    /// Index of string descriptor describing this interface.
-    pub interface_name: StringIndex,
-}
-
-impl<'a> From<&InterfaceDescriptorChain<'a>> for InterfaceDescriptor {
-    fn from(g: &InterfaceDescriptorChain<'a>) -> Self {
-        Self {
-            interface_number: g.interface_number,
-            alternate_setting: g.alternate_setting,
-            num_endpoints: g.num_endpoints,
-            interface_class: g.interface_class,
-            interface_subclass: g.interface_subclass,
-            interface_protocol: g.interface_protocol,
-            interface_name: g.interface_name,
-        }
     }
 }
 

@@ -349,7 +349,6 @@ impl<'a, T> core::ops::DerefMut for DescriptorChain<'a, T> {
         &mut self.descriptor
     }
 }
-
 /// The chain of descriptors of a [ConfigurationDescriptor].
 ///
 /// When you request the configuration descriptor of a usb device you get a chain of descriptors (USB 2.0 §9.6.3).
@@ -591,6 +590,12 @@ impl<'a> InterfaceDescriptorChain<'a> {
             buffer_idx: 0,
             iface_desc: self,
         }
+    }
+}
+
+impl<'a> From<&InterfaceDescriptorChain<'a>> for InterfaceDescriptor {
+    fn from(chain: &InterfaceDescriptorChain<'a>) -> Self {
+        chain.descriptor
     }
 }
 
