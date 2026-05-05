@@ -389,7 +389,7 @@ pub struct Conversion {
     pub loop_channel_index: u8,
     /// The trigger that triggered the command to run
     pub trigger_id_source: u8,
-    /// The raw value from the ADC
+    /// The converted value, normalized to the configured resolution (0–4095 for 12-bit, 0–65535 for 16-bit)
     pub conv_value: u16,
 }
 
@@ -563,8 +563,8 @@ impl<'a, M: Mode> Adc<'a, M> {
         // In 16-bit mode, the full 16-bit range is used and no shift is needed.
         let conv_value = if cmd_index > 0 && cmd_index <= self.commands.len() {
             match self.commands[cmd_index - 1].config.resolution {
-                ConvMode::DATA_12_BITS => raw_value >> 3,
-                ConvMode::DATA_16_BITS => raw_value,
+                ConvMode::Data12Bits => raw_value >> 3,
+                ConvMode::Data16Bits => raw_value,
             }
         } else {
             raw_value
