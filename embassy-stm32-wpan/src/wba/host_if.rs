@@ -22,6 +22,7 @@ pub const MAX_BLE_PKT_SIZE: usize = 280;
 
 /// Initialize the HCI host interface
 /// This should be called during BLE stack initialization
+#[allow(dead_code)]
 pub unsafe fn init() {
     // The host callback will be registered in ll_sys_ble_cntrl_init
     // Here we just ensure our buffers are ready

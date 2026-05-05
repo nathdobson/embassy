@@ -111,6 +111,7 @@ pub fn run(mask: u32) -> bool {
 }
 
 /// Check if there are any pending tasks or events
+#[allow(dead_code)]
 pub fn has_pending_work() -> bool {
     SEQUENCER.has_work()
 }
