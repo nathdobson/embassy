@@ -216,7 +216,7 @@ impl Controller {
 
     /// Consume the controller and return the controller state so it can be
     /// passed to the next `HCI::new()` or `HCI::new_dtm()` call.
-    pub(crate) fn release_state(self) -> &'static mut ControllerState {
+    pub fn release_state(self) -> &'static mut ControllerState {
         let ptr = self.state_ptr;
         // Drop self first — runs Drop (reset_ble_stack) and drops receiver —
         // so no references into *ptr exist before we reconstruct the &'static mut.
