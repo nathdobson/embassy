@@ -809,8 +809,8 @@ fn terminal_type_from_u16(terminal_type: u16) -> TerminalType {
     }
 }
 
-/// Input terminal descriptor for audio input sources.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Input terminal descriptor for audio input sources. (USB Audio Devices 2.0 §4.7.2.4)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InputTerminalDescriptor {
     /// Unique identifier for this input terminal.
@@ -833,21 +833,18 @@ pub struct InputTerminalDescriptor {
     pub terminal_name: StringIndex,
 }
 
+impl ExtendableDescriptor for InputTerminalDescriptor {
+    const MIN_LEN: u8 = 17;
+}
+
 impl USBDescriptor for InputTerminalDescriptor {
-    const BUF_SIZE: usize = 17;
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
+    const DESC_SUBTYPE: Option<u8> = Some(ac_descriptor::INPUT_TERMINAL);
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() != Self::BUF_SIZE {
-            return Err(());
-        }
-        if bytes[1] != Self::DESC_TYPE {
-            return Err(());
-        }
-        if bytes[2] != ac_descriptor::INPUT_TERMINAL {
-            return Err(());
-        }
+        Self::match_bytes(bytes).map_err(|_| ())?;
         Ok(Self {
             terminal_id: bytes[3],
             terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
