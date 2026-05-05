@@ -38,14 +38,14 @@
 //! }
 //! ```
 
-use embassy_futures::select::select;
-use embassy_time::Timer;
+use embassy_futures::{join::join, select::select};
+use embassy_time::{Duration, Ticker, Timer};
 
 use super::{linklayer_plat, util_seq};
-use crate::util::Flag;
-
-// BleStack_Process return values
-pub(crate) const BLE_SLEEPMODE_RUNNING: u8 = 0;
+use crate::{
+    host_if::{TASK_BLE_HOST_MASK, TASK_LINK_LAYER_MASK},
+    util::Flag,
+};
 
 /// Ble runner task initialized
 pub(crate) static BLE_INIT: Flag = Flag::new(false);
@@ -83,18 +83,33 @@ pub async fn ble_runner() -> ! {
 
     info!("BLE runner execution started");
 
-    loop {
-        // Wait for either a sequencer event or a timer expiry
-        select(
-            util_seq::wait_for_event(),
-            Timer::at(linklayer_plat::earliest_timer_deadline()),
-        )
-        .await;
+    join(
+        async {
+            let mut ticker = Ticker::every(Duration::from_secs(8));
+            loop {
+                ticker.next().await;
 
-        // Check for any expired timers on each iteration
-        linklayer_plat::check_expired_timers();
+                util_seq::UTIL_SEQ_ResumeTask(TASK_BLE_HOST_MASK | TASK_LINK_LAYER_MASK);
+            }
+        },
+        async {
+            loop {
+                // Wait for either a sequencer event or a timer expiry
+                select(
+                    util_seq::wait_for_event(),
+                    Timer::at(linklayer_plat::earliest_timer_deadline()),
+                )
+                .await;
 
-        // Resume the sequencer context
-        util_seq::seq_resume();
-    }
+                // Check for any expired timers on each iteration
+                linklayer_plat::check_expired_timers();
+
+                // Resume the sequencer context
+                util_seq::seq_resume();
+            }
+        },
+    )
+    .await;
+
+    loop {}
 }
