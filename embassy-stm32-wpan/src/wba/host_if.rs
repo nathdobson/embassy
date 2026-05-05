@@ -5,15 +5,14 @@
 
 // Event delivery is handled by BLECB_Indication (linklayer_plat.rs), not here.
 use crate::wba::bindings::link_layer::ble_buff_hdr_t;
-use crate::wba::bindings::mac;
-use crate::wba::util_seq;
+use crate::wba::{ll_sys_if, util_seq};
 
 // Task ID for BLE Host processing (next available after CFG_TASK_NBR=9)
 pub const CFG_TASK_BLE_HOST: u32 = 9;
 pub const TASK_BLE_HOST_MASK: u32 = 1 << CFG_TASK_BLE_HOST;
 pub const TASK_PRIO_BLE_HOST: u32 = 0; // CFG_SEQ_PRIO_0
 // Link Layer background task
-pub const TASK_LINK_LAYER_MASK: u32 = 1 << mac::CFG_TASK_ID_T_CFG_TASK_LINK_LAYER;
+pub const TASK_LINK_LAYER_MASK: u32 = ll_sys_if::TASK_LINK_LAYER_MASK;
 
 pub const MAX_BLE_PKT_SIZE: usize = 280;
 
