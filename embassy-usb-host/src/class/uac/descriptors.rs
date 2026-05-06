@@ -859,8 +859,8 @@ impl USBDescriptor for InputTerminalDescriptor {
     }
 }
 
-/// Output terminal descriptor for audio output destinations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Output terminal descriptor for audio output destinations. (USB Audio Devices 2.0 §4.7.2.5)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OutputTerminalDescriptor {
     /// Unique identifier for this output terminal.
@@ -879,21 +879,18 @@ pub struct OutputTerminalDescriptor {
     pub terminal_name: StringIndex,
 }
 
+impl ExtendableDescriptor for OutputTerminalDescriptor {
+    const MIN_LEN: u8 = 12;
+}
+
 impl USBDescriptor for OutputTerminalDescriptor {
-    const BUF_SIZE: usize = 12;
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
+    const DESC_SUBTYPE: Option<u8> = Some(ac_descriptor::OUTPUT_TERMINAL);
     type Error = ();
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() != Self::BUF_SIZE {
-            return Err(());
-        }
-        if bytes[1] != Self::DESC_TYPE {
-            return Err(());
-        }
-        if bytes[2] != ac_descriptor::OUTPUT_TERMINAL {
-            return Err(());
-        }
+        Self::match_bytes(bytes).map_err(|_| ())?;
         Ok(Self {
             terminal_id: bytes[3],
             terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
