@@ -38,13 +38,11 @@
 //! }
 //! ```
 
-use embassy_futures::join::join;
 use embassy_futures::select::select;
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::Timer;
 
 use super::{linklayer_plat, util_seq};
 use crate::util::Flag;
-use crate::wba::host_if::{TASK_BLE_HOST_MASK, TASK_LINK_LAYER_MASK};
 
 /// Ble runner task initialized
 pub(crate) static BLE_INIT: Flag = Flag::new(false);
