@@ -27,6 +27,7 @@ pub(crate) const DEFAULT_MAX_DESCRIPTOR_SIZE: usize = 512;
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DescriptorError {
+    BadDescriptorData,
     BadDescriptorSize,
     BadDescriptorType,
     NotImplemented,

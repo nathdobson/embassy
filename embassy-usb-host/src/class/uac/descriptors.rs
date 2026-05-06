@@ -1010,8 +1010,8 @@ impl AudioStreamingInterface {
     }
 }
 
-/// Audio streaming class descriptor containing format and channel information.
-#[derive(Debug, Clone, PartialEq)]
+/// Audio streaming class descriptor containing format and channel information. (USB Audio Devices 2.0 §4.9.2)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AudioStreamingClassDescriptor {
     /// Terminal link ID connecting to the control interface.
@@ -1028,26 +1028,23 @@ pub struct AudioStreamingClassDescriptor {
     pub channel_name: StringIndex,
 }
 
+impl ExtendableDescriptor for AudioStreamingClassDescriptor {
+    const MIN_LEN: u8 = 16;
+}
+
 impl USBDescriptor for AudioStreamingClassDescriptor {
-    const BUF_SIZE: usize = 16;
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
-    type Error = ();
+    const DESC_SUBTYPE: Option<u8> = Some(as_descriptor::GENERAL);
+    type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::BUF_SIZE {
-            return Err(());
-        }
-        if bytes[1] != Self::DESC_TYPE {
-            return Err(());
-        }
-        if bytes[2] != as_descriptor::GENERAL {
-            return Err(());
-        }
+        Self::match_bytes(bytes)?;
         let format =
             format_type::Format::from_u32(bytes[5], u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]));
         if format.is_none() {
             error!("Invalid format type descriptor: type {:?}", bytes[5]);
-            return Err(());
+            return Err(DescriptorError::BadDescriptorData);
         }
         Ok(Self {
             terminal_link_id: bytes[3],
