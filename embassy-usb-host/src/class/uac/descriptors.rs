@@ -605,7 +605,7 @@ impl USBDescriptor for ClockMultiplierDescriptor {
 }
 
 /// Enumeration of terminal descriptor types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum TerminalDescriptor {
     /// Input terminal descriptor.
@@ -614,21 +614,27 @@ pub enum TerminalDescriptor {
     Output(OutputTerminalDescriptor),
 }
 
-impl TerminalDescriptor {
-    fn try_from_bytes(bytes: &[u8]) -> Result<Self, ()> {
-        if bytes.len() < 3 {
-            return Err(());
-        }
-        if bytes[1] != CS_INTERFACE {
-            return Err(());
-        }
+impl ExtendableDescriptor for TerminalDescriptor {
+    const MIN_LEN: u8 = 3;
+}
+
+impl USBDescriptor for TerminalDescriptor {
+    // can hold any subdescriptor that is supported
+    const BUF_SIZE: usize = const_max![InputTerminalDescriptor::BUF_SIZE, OutputTerminalDescriptor::BUF_SIZE,];
+    const DESC_TYPE: u8 = CS_INTERFACE;
+    type Error = DescriptorError;
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::match_bytes(bytes)?;
         match bytes[2] {
             ac_descriptor::INPUT_TERMINAL => Ok(Self::Input(InputTerminalDescriptor::try_from_bytes(bytes)?)),
             ac_descriptor::OUTPUT_TERMINAL => Ok(Self::Output(OutputTerminalDescriptor::try_from_bytes(bytes)?)),
-            _ => Err(()),
+            _ => Err(DescriptorError::BadDescriptorType),
         }
     }
+}
 
+impl TerminalDescriptor {
     /// Returns the terminal ID for this descriptor.
     pub fn terminal_id(&self) -> u8 {
         match self {
@@ -841,10 +847,10 @@ impl USBDescriptor for InputTerminalDescriptor {
     const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
     const DESC_SUBTYPE: Option<u8> = Some(ac_descriptor::INPUT_TERMINAL);
-    type Error = ();
+    type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        Self::match_bytes(bytes).map_err(|_| ())?;
+        Self::match_bytes(bytes)?;
         Ok(Self {
             terminal_id: bytes[3],
             terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
@@ -887,10 +893,10 @@ impl USBDescriptor for OutputTerminalDescriptor {
     const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
     const DESC_SUBTYPE: Option<u8> = Some(ac_descriptor::OUTPUT_TERMINAL);
-    type Error = ();
+    type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        Self::match_bytes(bytes).map_err(|_| ())?;
+        Self::match_bytes(bytes)?;
         Ok(Self {
             terminal_id: bytes[3],
             terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
