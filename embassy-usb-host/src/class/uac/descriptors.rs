@@ -383,8 +383,8 @@ impl AudioControlInterface {
     }
 }
 
-/// Audio control header descriptor containing version and category information.
-#[derive(Debug, PartialEq)]
+/// Audio control header descriptor containing version and category information. (USB Audio Devices 2.0 §4.7.2)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AudioControlHeaderDescriptor {
     /// Audio device class version (major, minor).
@@ -395,21 +395,18 @@ pub struct AudioControlHeaderDescriptor {
     pub controls_bitmap: u8,
 }
 
+impl ExtendableDescriptor for AudioControlHeaderDescriptor {
+    const MIN_LEN: u8 = 9;
+}
+
 impl USBDescriptor for AudioControlHeaderDescriptor {
-    const BUF_SIZE: usize = 9;
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = CS_INTERFACE;
-    type Error = ();
+    const DESC_SUBTYPE: Option<u8> = Some(ac_descriptor::HEADER);
+    type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        if bytes.len() < Self::BUF_SIZE {
-            return Err(());
-        }
-        if bytes[1] != Self::DESC_TYPE {
-            return Err(());
-        }
-        if bytes[2] != ac_descriptor::HEADER {
-            return Err(());
-        }
+        Self::match_bytes(bytes)?;
         Ok(Self {
             audio_device_class: (bytes[4], bytes[3]),
             category: bytes[5],
