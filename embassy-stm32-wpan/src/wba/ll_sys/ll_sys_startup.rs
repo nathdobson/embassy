@@ -104,20 +104,6 @@ pub unsafe extern "C" fn ll_sys_ble_cntrl_init(host_callback: hst_cbk) {
 // NOTE: init_ble_link_layer and init_ble_link_layer_minimal have been removed.
 // Use init_ble_stack() instead, which uses BleStack_Init for proper initialization.
 
-#[cfg(feature = "wba-ble")]
-/// Complete the BLE link layer initialization
-/// This should be called after the sequencer is running
-#[allow(dead_code)]
-pub fn complete_ble_link_layer_init() {
-    trace!("complete_ble_link_layer_init: starting");
-
-    unsafe {
-        ll_sys_dependencies_init();
-    }
-
-    trace!("complete_ble_link_layer_init: done");
-}
-
 // ========================================================================
 // BleStack_Init based initialization (recommended approach)
 // ========================================================================
