@@ -19,15 +19,15 @@ use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::AtomicWaker;
 use hci::Opcode;
 
-use crate::channels::cpu1::IPCC_HCI_ACL_DATA_CHANNEL;
-use crate::cmd::CmdPacket;
-use crate::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
-use crate::evt;
-use crate::evt::{EvtBox, EvtPacket};
 use crate::sub::mm;
-use crate::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
-use crate::unsafe_linked_list::LinkedListNode;
 use crate::util::Flag;
+use crate::wb::channels::cpu1::IPCC_HCI_ACL_DATA_CHANNEL;
+use crate::wb::cmd::CmdPacket;
+use crate::wb::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
+use crate::wb::evt;
+use crate::wb::evt::{EvtBox, EvtPacket};
+use crate::wb::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
+use crate::wb::unsafe_linked_list::LinkedListNode;
 
 static ACL_EVT_OUT: Flag = Flag::new(false);
 
@@ -314,8 +314,8 @@ struct SlotGuard<'d, 'a> {
 #[cfg(feature = "bt-hci")]
 impl<'d, 'a> Drop for SlotGuard<'d, 'a> {
     fn drop(&mut self) {
-        self.controller.signal.reset();
         self.controller.slot.borrow().borrow_mut().take();
+        self.controller.signal.reset();
         self.controller.waker.wake();
     }
 }

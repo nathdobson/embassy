@@ -1,9 +1,9 @@
 use core::marker::PhantomData;
 use core::{ptr, slice};
 
-use super::PacketHeader;
-use crate::consts::TL_EVT_HEADER_SIZE;
 use crate::sub::mm;
+use crate::wb::PacketHeader;
+use crate::wb::consts::TL_EVT_HEADER_SIZE;
 
 /**
  * The payload of `Evt` for a command status event
@@ -28,6 +28,7 @@ pub struct CcEvt {
 }
 
 impl CcEvt {
+    #[allow(dead_code)]
     pub fn write(&self, buf: &mut [u8]) {
         unsafe {
             let len = core::mem::size_of::<CcEvt>();
@@ -36,11 +37,12 @@ impl CcEvt {
             let self_ptr: *const CcEvt = self;
             let self_buf_ptr: *const u8 = self_ptr.cast();
 
-            core::ptr::copy(self_buf_ptr, buf.as_mut_ptr(), len);
+            ptr::copy_nonoverlapping(self_buf_ptr, buf.as_mut_ptr(), len);
         }
     }
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Default)]
 #[repr(C, packed)]
 pub struct AsynchEvt {
