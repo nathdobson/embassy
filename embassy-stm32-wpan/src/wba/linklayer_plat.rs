@@ -1854,13 +1854,14 @@ pub unsafe extern "C" fn BLEPLAT_PkaReadDhKey(dh_key: *mut u32) -> i32 {
 /// BLE stack HCI event indication callback
 /// This is called by the BLE stack when HCI events arrive
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_data: *const u8, _ext_length: u16) -> u8 {
+pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, ext_data: *const u8, ext_length: u16) -> u8 {
     if data.is_null() || length == 0 {
         return 1; // Error
     }
 
     // Convert to slice
     let event_data = core::slice::from_raw_parts(data, length as usize);
+    let ext_data = core::slice::from_raw_parts(ext_data, ext_length as usize);
 
     trace!(
         "BLECB_Indication: event_code=0x{:02X}, length={}",
@@ -1899,14 +1900,14 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
 
         // TODO: handle these events
 
-        return 0;
+        // return 0;
     }
 
     let Some(mut slot) = unsafe { EVENT_CHANNEL.as_mut() }.unwrap().try_send() else {
         return 0;
     };
 
-    slot.copy_from(event_data);
+    slot.copy_from(event_data, ext_data);
     slot.send_done();
 
     util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
