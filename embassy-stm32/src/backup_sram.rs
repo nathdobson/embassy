@@ -1,7 +1,5 @@
 //! Battary backed SRAM
 
-use core::mem;
-
 use embassy_hal_internal::Peri;
 
 use crate::_generated::{BKPSRAM_BASE, BKPSRAM_SIZE};
@@ -52,29 +50,11 @@ impl BackupMemory {
         assert!(address + dst.len() <= self.size());
         let p = unsafe { self.as_ptr().add(address) };
 
-        let (prefix, middle, suffix) = unsafe { dst.align_to_mut::<usize>() };
-        let mut i = 0;
-
-        for b in prefix {
-            // SAFETY: Single byte reads are safe to perform into the backup sram
+        for (i, b) in dst.into_iter().enumerate() {
+            // SAFETY: Single byte writes are safe to perform into the backup sram
             unsafe {
                 *b = p.add(i).read_volatile();
             }
-            i += i;
-        }
-        for x in middle {
-            // SAFETY: Word sized reads are safe to perform into the backup sram since they are aligned
-            unsafe {
-                *x = p.add(i).cast::<usize>().read_volatile();
-            }
-            i += mem::size_of::<usize>();
-        }
-        for b in suffix {
-            // SAFETY: Single byte reads are safe to perform into the backup sram
-            unsafe {
-                *b = p.add(i).read_volatile();
-            }
-            i += i;
         }
     }
 
@@ -85,29 +65,11 @@ impl BackupMemory {
         assert!(address + src.len() <= self.size());
         let p = unsafe { self.as_ptr().add(address) };
 
-        let (prefix, middle, suffix) = unsafe { src.align_to::<usize>() };
-        let mut i = 0;
-
-        for &b in prefix {
+        for (i, &b) in src.into_iter().enumerate() {
             // SAFETY: Single byte writes are safe to perform into the backup sram
             unsafe {
                 p.add(i).write_volatile(b);
             }
-            i += i;
-        }
-        for &x in middle {
-            // SAFETY: Word sized writes are safe to perform into the backup sram since they are aligned
-            unsafe {
-                p.add(i).cast::<usize>().write_volatile(x);
-            }
-            i += mem::size_of::<usize>();
-        }
-        for &b in suffix {
-            // SAFETY: Single byte writes are safe to perform into the backup sram
-            unsafe {
-                p.add(i).write_volatile(b);
-            }
-            i += i;
         }
     }
 }
