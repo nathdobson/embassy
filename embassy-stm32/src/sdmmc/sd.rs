@@ -713,7 +713,8 @@ impl<'a, 'b, A: Addressable> StorageDevice<'a, 'b, A> {
 
         if use_acmd23 {
             // CMD55 + cmd(23) = ACMD23 (SET_WR_BLK_ERASE_COUNT).
-            self.sdmmc.cmd(common_cmd::app_cmd(self.info.get_address()), true, false)?;
+            self.sdmmc
+                .cmd(common_cmd::app_cmd(self.info.get_address()), true, false)?;
             self.sdmmc
                 .cmd(sd_cmd::set_block_count(blocks.len() as u32), true, false)?;
         }
