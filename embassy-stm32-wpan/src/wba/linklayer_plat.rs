@@ -1872,25 +1872,34 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
     // Byte 1: Event code (0x05=Disconnect, 0x3E=LE Meta, 0xFF=Vendor)
     // Byte 2: Parameter total length
     // Byte 3+: Event parameters
-    let evt_code = if length >= 2 { event_data[1] } else { event_data[0] };
 
-    if evt_code == 0x05 {
-        let status = if length >= 4 { event_data[3] } else { 0 };
-        let handle = if length >= 6 {
-            u16::from_le_bytes([event_data[4], event_data[5]])
+    if event_data.len() > 0 && event_data[0] == 4 {
+        let evt_code = if length >= 2 { event_data[1] } else { event_data[0] };
+
+        if evt_code == 0x05 {
+            let status = if length >= 4 { event_data[3] } else { 0 };
+            let handle = if length >= 6 {
+                u16::from_le_bytes([event_data[4], event_data[5]])
+            } else {
+                0
+            };
+            let reason = if length >= 7 { event_data[6] } else { 0 };
+            debug!(
+                "HCI Event: Disconnection Complete (status=0x{:02X}, handle=0x{:04X}, reason=0x{:02X})",
+                status, handle, reason
+            );
+        } else if evt_code == 0x3E {
+            let sub_code = if length >= 4 { event_data[3] } else { 0 };
+            debug!("HCI Event: LE Meta (sub=0x{:02X}, len={})", sub_code, length);
         } else {
-            0
-        };
-        let reason = if length >= 7 { event_data[6] } else { 0 };
-        info!(
-            "HCI Event: Disconnection Complete (status=0x{:02X}, handle=0x{:04X}, reason=0x{:02X})",
-            status, handle, reason
-        );
-    } else if evt_code == 0x3E {
-        let sub_code = if length >= 4 { event_data[3] } else { 0 };
-        info!("HCI Event: LE Meta (sub=0x{:02X}, len={})", sub_code, length);
+            debug!("HCI Event: code=0x{:02X}, len={}", evt_code, length);
+        }
     } else {
-        info!("HCI Event: code=0x{:02X}, len={}", evt_code, length);
+        debug!("Other Event: {:x}", event_data[..10.min(event_data.len())]);
+
+        // TODO: handle these events
+
+        return 0;
     }
 
     let Some(mut slot) = unsafe { EVENT_CHANNEL.as_mut() }.unwrap().try_send() else {
