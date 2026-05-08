@@ -16,7 +16,6 @@
 
 use embassy_embedded_hal::SetConfig;
 use embassy_mcxa as hal;
-
 use hal::Peri;
 use hal::i2c::controller::{Config as CtrlConfig, IOError as ControllerIOError, SetupError, Speed};
 use hal::i2c::target::{self, Address, Config as TargetConfig, InterruptHandler, Request};
@@ -65,13 +64,11 @@ pub async fn target_task(
 /// Both `I2c<'_, Async>` and `I2c<'_, Dma<'_>>` implement
 /// `embedded_hal_async::i2c::I2c` and `SetConfig`, so we use both.
 pub trait Controller:
-    embedded_hal_async::i2c::I2c<Error = ControllerIOError>
-    + SetConfig<Config = CtrlConfig, ConfigError = SetupError>
+    embedded_hal_async::i2c::I2c<Error = ControllerIOError> + SetConfig<Config = CtrlConfig, ConfigError = SetupError>
 {
 }
 impl<
-    T: embedded_hal_async::i2c::I2c<Error = ControllerIOError>
-        + SetConfig<Config = CtrlConfig, ConfigError = SetupError>,
+    T: embedded_hal_async::i2c::I2c<Error = ControllerIOError> + SetConfig<Config = CtrlConfig, ConfigError = SetupError>,
 > Controller for T
 {
 }
@@ -170,9 +167,7 @@ pub mod tests {
         let mut rbuf = [0u8; 32];
 
         for &l in LENGTHS {
-            ctrl.write(ADDR, &payload[..l])
-                .await
-                .map_err(|_| "write failed")?;
+            ctrl.write(ADDR, &payload[..l]).await.map_err(|_| "write failed")?;
             let r = &mut rbuf[..l];
             ctrl.read(ADDR, r).await.map_err(|_| "read failed")?;
             if r.iter().any(|&b| b != EXPECT) {
@@ -231,9 +226,7 @@ pub mod tests {
         }
 
         // E5: valid target still works after a failed transaction.
-        ctrl.write(ADDR, &[0xAB, 0xCD])
-            .await
-            .map_err(|_| "E5 write failed")?;
+        ctrl.write(ADDR, &[0xAB, 0xCD]).await.map_err(|_| "E5 write failed")?;
         let mut r = [0u8; 4];
         ctrl.read(ADDR, &mut r).await.map_err(|_| "E5 read failed")?;
         if r != [EXPECT; 4] {
@@ -253,6 +246,7 @@ pub mod tests {
             ctrl.set_config(&cfg).map_err(|_| "set_config failed")?;
 
             for i in 0..50u16 {
+                defmt::trace!("[t_speed_sweep] iter {}", i);
                 ctrl.write(ADDR, &[i as u8, (i >> 8) as u8])
                     .await
                     .map_err(|_| "speed: write failed")?;
@@ -302,9 +296,7 @@ pub mod tests {
 
             match op {
                 0 => {
-                    ctrl.write(ADDR, &buf[..len])
-                        .await
-                        .map_err(|_| "soak: write failed")?;
+                    ctrl.write(ADDR, &buf[..len]).await.map_err(|_| "soak: write failed")?;
                 }
                 1 => {
                     let r = &mut rbuf[..len];
