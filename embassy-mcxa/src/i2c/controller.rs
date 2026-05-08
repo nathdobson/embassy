@@ -366,15 +366,24 @@ impl<'d, M: Mode> I2c<'d, M> {
 
     fn remediation(&self) {
         #[cfg(feature = "defmt")]
-        defmt::trace!("Future dropped, issuing stop",);
+        defmt::trace!("Future dropped, recovering controller",);
 
-        // if the FIFO is not empty, drop its contents.
-        if !self.is_tx_fifo_empty_or_error() {
-            self.reset_fifos();
-        }
-
-        // send a stop command
+        // Send a STOP. After an address NACK with empty TX FIFO and
+        // autostop disabled, this releases the bus.
+        //
+        // Important: `stop()` busy-waits on `is_tx_fifo_empty_or_error`,
+        // which returns true on *any* error (e.g., FEF raised because
+        // the master was already in idle when STOP was queued). In
+        // that case the STOP command may still be sitting in the TX
+        // FIFO, ready to confuse the next transaction. Always reset
+        // the FIFOs after the STOP attempt to guarantee a clean slate.
         let _ = self.stop();
+        self.reset_fifos();
+
+        // Clear any residual MSR flags raised by the recovery STOP
+        // (FEF in particular) so the next transaction starts clean.
+        let msr = self.info.regs().msr().read();
+        self.info.regs().msr().write(|w| *w = msr);
     }
 
     /// Resets both TX and RX FIFOs dropping their contents.
@@ -897,11 +906,18 @@ impl<'d> AsyncEngine for I2c<'d, Async> {
             return Err(IOError::InvalidReadBufferLength);
         }
 
-        // perform corrective action if the future is dropped
-        let on_drop = OnDrop::new(|| self.remediation());
-
         for chunk in read.chunks_mut(256) {
             self.async_start(address, true).await?;
+
+            // perform corrective action if the future is dropped or an
+            // error happens between here and the end of the read.
+            //
+            // NOTE: this *must* be set up *after* async_start. async_start
+            // already runs `status_and_act`, which on NACK performs its
+            // own remediation; if we set OnDrop earlier, the early `?`
+            // return would invoke remediation a second time and corrupt
+            // the controller state for the next transaction.
+            let on_drop = OnDrop::new(|| self.remediation());
 
             // send receive command
             self.send_cmd(Cmd::RECEIVE, (chunk.len() - 1) as u8);
@@ -931,14 +947,14 @@ impl<'d> AsyncEngine for I2c<'d, Async> {
 
                 *byte = self.info.regs().mrdr().read().data();
             }
+
+            // defuse it; we'll re-arm on the next chunk if any.
+            on_drop.defuse();
         }
 
         if send_stop == SendStop::Yes {
             self.async_stop().await?;
         }
-
-        // defuse it if the future is not dropped
-        on_drop.defuse();
 
         Ok(())
     }
@@ -1074,14 +1090,21 @@ impl<'d> AsyncEngine for I2c<'d, Dma<'d>> {
             return Err(IOError::InvalidReadBufferLength);
         }
 
-        // perform corrective action if the future is dropped
-        let on_drop = OnDrop::new(|| {
-            self.remediation();
-            self.info.regs().mder().modify(|w| w.set_rdde(false));
-        });
-
         for chunk in read.chunks_mut(256) {
             self.async_start(address, true).await?;
+
+            // perform corrective action if the future is dropped or an
+            // error happens between here and the end of the read.
+            //
+            // NOTE: this *must* be set up *after* async_start. async_start
+            // already runs `status_and_act`, which on NACK performs its
+            // own remediation; if we set OnDrop earlier, the early `?`
+            // return would invoke remediation a second time and corrupt
+            // the controller state for the next transaction.
+            let on_drop = OnDrop::new(|| {
+                self.remediation();
+                self.info.regs().mder().modify(|w| w.set_rdde(false));
+            });
 
             // send receive command
             self.send_cmd(Cmd::RECEIVE, (chunk.len() - 1) as u8);
@@ -1132,14 +1155,14 @@ impl<'d> AsyncEngine for I2c<'d, Dma<'d>> {
                 self.mode.rx_dma.disable_request();
                 self.mode.rx_dma.clear_done();
             }
+
+            // defuse it; we'll re-arm on the next chunk if any.
+            on_drop.defuse();
         }
 
         if send_stop == SendStop::Yes {
             self.async_stop().await?;
         }
-
-        // defuse it if the future is not dropped
-        on_drop.defuse();
 
         Ok(())
     }
