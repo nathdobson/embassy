@@ -14,10 +14,11 @@
 //! Wiring (one-time): jumper P0_20 ↔ P3_20 (SDA) and P0_21 ↔ P3_21 (SCL),
 //! and put 4.7k pull-ups on both nets.
 
+use embassy_embedded_hal::SetConfig;
 use embassy_mcxa as hal;
 
 use hal::Peri;
-use hal::i2c::controller::IOError as ControllerIOError;
+use hal::i2c::controller::{Config as CtrlConfig, IOError as ControllerIOError, SetupError, Speed};
 use hal::i2c::target::{self, Address, Config as TargetConfig, InterruptHandler, Request};
 use hal::interrupt::typelevel::Binding;
 use hal::peripherals::{LPI2C3, P3_20, P3_21};
@@ -62,10 +63,18 @@ pub async fn target_task(
 /// Trait abstracting an async I2C controller for the test suite.
 ///
 /// Both `I2c<'_, Async>` and `I2c<'_, Dma<'_>>` implement
-/// `embedded_hal_async::i2c::I2c`, so we use that. We need
-/// `Error = IOError` for nicer messages.
-pub trait Controller: embedded_hal_async::i2c::I2c<Error = ControllerIOError> {}
-impl<T: embedded_hal_async::i2c::I2c<Error = ControllerIOError>> Controller for T {}
+/// `embedded_hal_async::i2c::I2c` and `SetConfig`, so we use both.
+pub trait Controller:
+    embedded_hal_async::i2c::I2c<Error = ControllerIOError>
+    + SetConfig<Config = CtrlConfig, ConfigError = SetupError>
+{
+}
+impl<
+    T: embedded_hal_async::i2c::I2c<Error = ControllerIOError>
+        + SetConfig<Config = CtrlConfig, ConfigError = SetupError>,
+> Controller for T
+{
+}
 
 pub mod harness {
     use super::*;
@@ -103,6 +112,22 @@ pub mod harness {
             Ok(()) => defmt::info!("[t_edges] PASS"),
             Err(e) => {
                 defmt::error!("[t_edges] FAIL: {}", e);
+                panic!("test failure");
+            }
+        }
+
+        match tests::t_speed_sweep(ctrl).await {
+            Ok(()) => defmt::info!("[t_speed_sweep] PASS"),
+            Err(e) => {
+                defmt::error!("[t_speed_sweep] FAIL: {}", e);
+                panic!("test failure");
+            }
+        }
+
+        match tests::t_soak(ctrl).await {
+            Ok(()) => defmt::info!("[t_soak] PASS"),
+            Err(e) => {
+                defmt::error!("[t_soak] FAIL: {}", e);
                 panic!("test failure");
             }
         }
@@ -216,6 +241,92 @@ pub mod tests {
             return Err("E5 mismatch");
         }
 
+        Ok(())
+    }
+
+    /// Repeat t_basic_rw at Standard / Fast / FastPlus. Restores Standard
+    /// before returning so the rest of the suite is unaffected.
+    pub async fn t_speed_sweep<C: Controller>(ctrl: &mut C) -> Result<(), &'static str> {
+        for &speed in &[Speed::Standard, Speed::Fast, Speed::FastPlus] {
+            let mut cfg = CtrlConfig::default();
+            cfg.speed = speed;
+            ctrl.set_config(&cfg).map_err(|_| "set_config failed")?;
+
+            for i in 0..50u16 {
+                ctrl.write(ADDR, &[i as u8, (i >> 8) as u8])
+                    .await
+                    .map_err(|_| "speed: write failed")?;
+                let mut r = [0u8; 2];
+                ctrl.read(ADDR, &mut r).await.map_err(|_| "speed: read failed")?;
+                if r != [EXPECT, EXPECT] {
+                    defmt::error!("speed {} iter {}: got={:02x}", speed, i, r);
+                    return Err("speed: mismatch");
+                }
+                ctrl.write_read(ADDR, &[i as u8], &mut r)
+                    .await
+                    .map_err(|_| "speed: wr failed")?;
+                if r != [EXPECT, EXPECT] {
+                    defmt::error!("speed {} wr i={}: got={:02x}", speed, i, r);
+                    return Err("speed: wr mismatch");
+                }
+            }
+        }
+
+        // Restore default speed.
+        let cfg = CtrlConfig::default();
+        ctrl.set_config(&cfg).map_err(|_| "set_config restore failed")?;
+        Ok(())
+    }
+
+    /// Long soak: N=2000 iters of a randomized op mix (W / R / WR).
+    /// PRNG is a simple xorshift seeded at compile time so the run is
+    /// deterministic.
+    pub async fn t_soak<C: Controller>(ctrl: &mut C) -> Result<(), &'static str> {
+        const N: u32 = 2000;
+        let mut state: u32 = 0xC0FFEE_u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+
+        for i in 0..N {
+            let op = next() % 3;
+            let len = ((next() % 8) as usize) + 1; // 1..=8
+            let mut buf = [0u8; 8];
+            for (j, b) in buf.iter_mut().enumerate() {
+                *b = (i as u8).wrapping_add(j as u8);
+            }
+            let mut rbuf = [0u8; 8];
+
+            match op {
+                0 => {
+                    ctrl.write(ADDR, &buf[..len])
+                        .await
+                        .map_err(|_| "soak: write failed")?;
+                }
+                1 => {
+                    let r = &mut rbuf[..len];
+                    ctrl.read(ADDR, r).await.map_err(|_| "soak: read failed")?;
+                    if r.iter().any(|&b| b != EXPECT) {
+                        defmt::error!("soak i={} R: got={:02x}", i, r);
+                        return Err("soak: read mismatch");
+                    }
+                }
+                _ => {
+                    let wlen = core::cmp::max(1, len / 2);
+                    let r = &mut rbuf[..len];
+                    ctrl.write_read(ADDR, &buf[..wlen], r)
+                        .await
+                        .map_err(|_| "soak: wr failed")?;
+                    if r.iter().any(|&b| b != EXPECT) {
+                        defmt::error!("soak i={} WR: got={:02x}", i, r);
+                        return Err("soak: wr mismatch");
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
