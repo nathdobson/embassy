@@ -180,7 +180,7 @@ impl From<Speed> for (u8, u8, u8, u8) {
         match value {
             Speed::Standard => (0x3d, 0x37, 0x3b, 0x1d),
             Speed::Fast => (0x0e, 0x0c, 0x0d, 0x06),
-            Speed::FastPlus => (0x04, 0x03, 0x03, 0x02),
+            Speed::FastPlus => (0x06, 0x05, 0x05, 0x03),
 
             // UltraFast is "special". Leaving it unimplemented until
             // the driver and the clock API is further stabilized.
