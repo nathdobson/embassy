@@ -24,7 +24,7 @@ pub type StringIndex = u8;
 /// Maximum descriptor buffer size used during enumeration.
 pub(crate) const DEFAULT_MAX_DESCRIPTOR_SIZE: usize = 512;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DescriptorError {
     BadDescriptorData,
@@ -382,6 +382,25 @@ impl USBDescriptor for DeviceDescriptor {
             serial_number: bytes[16],
             num_configurations: bytes[17],
         })
+    }
+}
+
+impl WritableDescriptor for DeviceDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        [bytes[2], bytes[3]] = self.bcd_usb.to_le_bytes();
+        bytes[4] = self.device_class;
+        bytes[5] = self.device_subclass;
+        bytes[6] = self.device_protocol;
+        bytes[7] = self.max_packet_size0;
+        [bytes[8], bytes[9]] = self.vendor_id.to_le_bytes();
+        [bytes[10], bytes[11]] = self.product_id.to_le_bytes();
+        [bytes[12], bytes[13]] = self.bcd_device.to_le_bytes();
+        bytes[14] = self.manufacturer;
+        bytes[15] = self.product;
+        bytes[16] = self.serial_number;
+        bytes[17] = self.num_configurations;
+        Ok(bytes[0] as usize)
     }
 }
 
@@ -1031,5 +1050,29 @@ mod test {
 
         let mut sv = ShowDescriptors {};
         cfg.visit_descriptors(&mut sv).unwrap();
+    }
+
+    #[test]
+    fn roundtrip_device_descriptor() {
+        let descriptor = DeviceDescriptor {
+            bcd_usb: 0x1122,
+            device_class: 0x33,
+            device_subclass: 0x44,
+            device_protocol: 0x55,
+            max_packet_size0: 0x66,
+            vendor_id: 0x7788,
+            product_id: 0x99aa,
+            bcd_device: 0xbbcc,
+            manufacturer: 0xdd,
+            product: 0xee,
+            serial_number: 0xff,
+            num_configurations: 0x00,
+        };
+        let mut bytes = [0u8; DeviceDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(DeviceDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(DeviceDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
