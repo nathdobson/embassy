@@ -113,6 +113,34 @@ pub trait FixedSizeDescriptor: USBDescriptor {
             Ok(())
         }
     }
+
+    /// Prepares `bytes` to receive descriptor data.
+    ///
+    /// Fills in the descriptor length and type, and zeroes the rest.
+    ///
+    /// On success, it returns `Ok(())`.
+    /// On error, it returns a [DescriptorError].
+    #[inline(always)]
+    fn prepare_bytes(bytes: &mut [u8], len: u8) -> Result<(), DescriptorError>
+    where
+        Self: WritableDescriptor,
+    {
+        if len != Self::LEN {
+            Err(DescriptorError::BadDescriptorSize)
+        } else if bytes.len() < Self::LEN as usize {
+            Err(DescriptorError::UnexpectedEndOfBuffer)
+        } else {
+            bytes[0] = len;
+            bytes[1] = Self::DESC_TYPE;
+            if let Some(subtype) = Self::DESC_SUBTYPE {
+                bytes[2] = subtype;
+                bytes[3..len as usize].fill(0);
+            } else {
+                bytes[2..len as usize].fill(0);
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Extendable fixed size descriptor.
