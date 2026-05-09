@@ -706,6 +706,20 @@ impl USBDescriptor for InterfaceDescriptor {
     }
 }
 
+impl WritableDescriptor for InterfaceDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        bytes[2] = self.interface_number;
+        bytes[3] = self.alternate_setting;
+        bytes[4] = self.num_endpoints;
+        bytes[5] = self.interface_class;
+        bytes[6] = self.interface_subclass;
+        bytes[7] = self.interface_protocol;
+        bytes[8] = self.interface_name;
+        Ok(bytes[0] as usize)
+    }
+}
+
 /// The chain of descriptors of a [InterfaceDescriptor].
 ///
 /// A [ConfigurationDescriptorChain] provides one or more interface descriptors (USB 2.0 §9.6.5).
@@ -1105,5 +1119,24 @@ mod test {
             Ok(ConfigurationDescriptor::MIN_LEN as usize)
         );
         assert_eq!(ConfigurationDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_interface_descriptor() {
+        let descriptor = InterfaceDescriptor {
+            interface_number: 0x11,
+            alternate_setting: 0x22,
+            num_endpoints: 0x33,
+            interface_class: 0x44,
+            interface_subclass: 0x55,
+            interface_protocol: 0x66,
+            interface_name: 0x77,
+        };
+        let mut bytes = [0u8; InterfaceDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(InterfaceDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(InterfaceDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
