@@ -921,6 +921,17 @@ impl USBDescriptor for EndpointDescriptor {
     }
 }
 
+impl WritableDescriptor for EndpointDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        bytes[2] = self.endpoint_address;
+        bytes[3] = self.attributes;
+        [bytes[4], bytes[5]] = self.max_packet_size.to_le_bytes();
+        bytes[6] = self.interval;
+        Ok(bytes[0] as usize)
+    }
+}
+
 impl From<EndpointDescriptor> for EndpointInfo {
     fn from(value: EndpointDescriptor) -> Self {
         EndpointInfo {
@@ -1138,5 +1149,21 @@ mod test {
             Ok(InterfaceDescriptor::MIN_LEN as usize)
         );
         assert_eq!(InterfaceDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_endpoint_descriptor() {
+        let descriptor = EndpointDescriptor {
+            endpoint_address: 0x11,
+            attributes: 0x22,
+            max_packet_size: 0x3344,
+            interval: 0x55,
+        };
+        let mut bytes = [0u8; EndpointDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(EndpointDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(EndpointDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
