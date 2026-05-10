@@ -1389,6 +1389,67 @@ impl USBDescriptor for FormatTypeDescriptor {
     }
 }
 
+impl WritableDescriptor for FormatTypeDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        match self {
+            Self::I(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_I as u8)?;
+                bytes[3] = format_type::I;
+                bytes[4] = data.subslot_size;
+                bytes[5] = data.bit_resolution;
+                Ok(bytes[0] as usize)
+            }
+            Self::II(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_II as u8)?;
+                bytes[3] = format_type::II;
+                [bytes[4], bytes[5]] = data.max_bit_rate.to_le_bytes();
+                [bytes[6], bytes[7]] = data.slots_per_frame.to_le_bytes();
+                Ok(bytes[0] as usize)
+            }
+            Self::III(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_III as u8)?;
+                bytes[3] = format_type::III;
+                bytes[4] = data.subslot_size;
+                bytes[5] = data.bit_resolution;
+                Ok(bytes[0] as usize)
+            }
+            Self::IV => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_IV as u8)?;
+                bytes[3] = format_type::IV;
+                Ok(bytes[0] as usize)
+            }
+            Self::ExtendedI(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_EXTENDED_I as u8)?;
+                bytes[3] = format_type::EXT_I;
+                bytes[4] = data.subslot_size;
+                bytes[5] = data.bit_resolution;
+                bytes[6] = data.header_length;
+                bytes[7] = data.control_size;
+                bytes[8] = data.sideband_protocol;
+                Ok(bytes[0] as usize)
+            }
+            Self::ExtendedII(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_EXTENDED_II as u8)?;
+                bytes[3] = format_type::EXT_II;
+                [bytes[4], bytes[5]] = data.max_bit_rate.to_le_bytes();
+                [bytes[6], bytes[7]] = data.samples_per_frame.to_le_bytes();
+                bytes[8] = data.header_length;
+                bytes[9] = data.sideband_protocol;
+                Ok(bytes[0] as usize)
+            }
+            Self::ExtendedIII(data) => {
+                Self::prepare_bytes(bytes, Self::BUF_SIZE_EXTENDED_III as u8)?;
+                bytes[3] = format_type::EXT_III;
+                bytes[4] = data.subslot_size;
+                bytes[5] = data.bit_resolution;
+                bytes[6] = data.header_length;
+                bytes[7] = data.sideband_protocol;
+                Ok(bytes[0] as usize)
+            }
+        }
+    }
+}
+
 /// Type I format descriptor for PCM-like formats.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1975,5 +2036,114 @@ mod test {
             Ok(AudioEndpointDescriptor::MIN_LEN as usize)
         );
         assert_eq!(AudioEndpointDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_i() {
+        let descriptor = FormatTypeDescriptor::I(FormatTypeI {
+            subslot_size: 0x11,
+            bit_resolution: 0x22,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_I];
+        assert!(FormatTypeDescriptor::BUF_SIZE_I <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_I)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_ii() {
+        let descriptor = FormatTypeDescriptor::II(FormatTypeII {
+            max_bit_rate: 0x1122,
+            slots_per_frame: 0x3344,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_II];
+        assert!(FormatTypeDescriptor::BUF_SIZE_II <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_II)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_iii() {
+        let descriptor = FormatTypeDescriptor::III(FormatTypeIII {
+            subslot_size: 0x11,
+            bit_resolution: 0x22,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_III];
+        assert!(FormatTypeDescriptor::BUF_SIZE_III <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_III)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_iv() {
+        let descriptor = FormatTypeDescriptor::IV;
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_IV];
+        assert!(FormatTypeDescriptor::BUF_SIZE_IV <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_IV)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_extended_i() {
+        let descriptor = FormatTypeDescriptor::ExtendedI(FormatTypeExtendedI {
+            subslot_size: 0x11,
+            bit_resolution: 0x22,
+            header_length: 0x33,
+            control_size: 0x44,
+            sideband_protocol: 0x55,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_EXTENDED_I];
+        assert!(FormatTypeDescriptor::BUF_SIZE_EXTENDED_I <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_EXTENDED_I)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_extended_ii() {
+        let descriptor = FormatTypeDescriptor::ExtendedII(FormatTypeExtendedII {
+            max_bit_rate: 0x1122,
+            samples_per_frame: 0x3344,
+            header_length: 0x55,
+            sideband_protocol: 0x66,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_EXTENDED_II];
+        assert!(FormatTypeDescriptor::BUF_SIZE_EXTENDED_II <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_EXTENDED_II)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_format_type_descriptor_extended_iii() {
+        let descriptor = FormatTypeDescriptor::ExtendedIII(FormatTypeExtendedIII {
+            subslot_size: 0x11,
+            bit_resolution: 0x22,
+            header_length: 0x33,
+            sideband_protocol: 0x44,
+        });
+        let mut bytes = [0u8; FormatTypeDescriptor::BUF_SIZE_EXTENDED_III];
+        assert!(FormatTypeDescriptor::BUF_SIZE_EXTENDED_III <= FormatTypeDescriptor::BUF_SIZE);
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(FormatTypeDescriptor::BUF_SIZE_EXTENDED_III)
+        );
+        assert_eq!(FormatTypeDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
