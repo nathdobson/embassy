@@ -1043,6 +1043,20 @@ impl USBDescriptor for OutputTerminalDescriptor {
     }
 }
 
+impl WritableDescriptor for OutputTerminalDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        bytes[3] = self.terminal_id;
+        [bytes[4], bytes[5]] = u16::from(self.terminal_type).to_le_bytes();
+        bytes[6] = self.associated_terminal_id;
+        bytes[7] = self.source_id;
+        bytes[8] = self.clock_source_id;
+        [bytes[9], bytes[10]] = self.controls_bitmap.to_le_bytes();
+        bytes[11] = self.terminal_name;
+        Ok(bytes[0] as usize)
+    }
+}
+
 /// Enumeration of unit descriptor types for audio processing units.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1867,5 +1881,24 @@ mod test {
             Ok(InputTerminalDescriptor::MIN_LEN as usize)
         );
         assert_eq!(InputTerminalDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roudtrip_output_terminal_descriptor() {
+        let descriptor = OutputTerminalDescriptor {
+            terminal_id: 0x11,
+            terminal_type: TerminalType::Speaker,
+            associated_terminal_id: 0x33,
+            source_id: 0x44,
+            clock_source_id: 0x55,
+            controls_bitmap: 0x6677,
+            terminal_name: 0x88,
+        };
+        let mut bytes = [0u8; OutputTerminalDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(OutputTerminalDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(OutputTerminalDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
