@@ -643,6 +643,17 @@ impl USBDescriptor for ClockMultiplierDescriptor {
     }
 }
 
+impl WritableDescriptor for ClockMultiplierDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        bytes[3] = self.clock_id;
+        bytes[4] = self.source_id;
+        bytes[5] = self.controls_bitmap;
+        bytes[6] = self.clock_name;
+        Ok(bytes[0] as usize)
+    }
+}
+
 /// Enumeration of terminal descriptor types.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1681,5 +1692,21 @@ mod test {
             assert_eq!(descriptor.write_to_bytes(&mut bytes), Ok(7 + n as usize));
             assert_eq!(ClockSelectorDescriptor::try_from_bytes(&bytes), Ok(descriptor));
         }
+    }
+
+    #[test]
+    fn roudtrip_clock_multiplier_descriptor() {
+        let descriptor = ClockMultiplierDescriptor {
+            clock_id: 0x11,
+            source_id: 0x22,
+            controls_bitmap: 0x33,
+            clock_name: 0x44,
+        };
+        let mut bytes = [0u8; ClockMultiplierDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(ClockMultiplierDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(ClockMultiplierDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
