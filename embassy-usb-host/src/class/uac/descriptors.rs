@@ -466,6 +466,17 @@ impl USBDescriptor for ClockDescriptor {
     }
 }
 
+impl WritableDescriptor for ClockDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        let len = match self {
+            ClockDescriptor::Source(descriptor) => descriptor.write_to_bytes(bytes)?,
+            ClockDescriptor::Selector(descriptor) => descriptor.write_to_bytes(bytes)?,
+            ClockDescriptor::Multiplier(descriptor) => descriptor.write_to_bytes(bytes)?,
+        };
+        Ok(len)
+    }
+}
+
 impl ClockDescriptor {
     /// Returns the clock ID for this descriptor.
     pub fn clock_id(&self) -> u8 {
@@ -1708,5 +1719,51 @@ mod test {
             Ok(ClockMultiplierDescriptor::MIN_LEN as usize)
         );
         assert_eq!(ClockMultiplierDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_clock_descriptor_source() {
+        let descriptor = ClockDescriptor::Source(ClockSourceDescriptor {
+            clock_id: 0x11,
+            attributes_bitmap: 0x22,
+            controls_bitmap: 0x33,
+            associated_terminal: 0x44,
+            clock_name: 0x55,
+        });
+        let mut bytes = [0u8; ClockDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(ClockSourceDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(ClockDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_clock_descriptor_selector() {
+        let descriptor = ClockDescriptor::Selector(ClockSelectorDescriptor {
+            clock_id: 0x11,
+            source_ids: Vec::from_array([0x22]),
+            controls_bitmap: 0x33,
+            clock_name: 0x44,
+        });
+        let mut bytes = [0u8; ClockDescriptor::BUF_SIZE];
+        assert_eq!(descriptor.write_to_bytes(&mut bytes), Ok(7 + 1));
+        assert_eq!(ClockDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_clock_descriptor_multiplier() {
+        let descriptor = ClockDescriptor::Multiplier(ClockMultiplierDescriptor {
+            clock_id: 0x11,
+            source_id: 0x22,
+            controls_bitmap: 0x33,
+            clock_name: 0x44,
+        });
+        let mut bytes = [0u8; ClockDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(ClockMultiplierDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(ClockDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
