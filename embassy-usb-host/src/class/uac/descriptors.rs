@@ -515,6 +515,18 @@ impl USBDescriptor for ClockSourceDescriptor {
     }
 }
 
+impl WritableDescriptor for ClockSourceDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        Self::prepare_bytes(bytes, Self::MIN_LEN)?;
+        bytes[3] = self.clock_id;
+        bytes[4] = self.attributes_bitmap;
+        bytes[5] = self.controls_bitmap;
+        bytes[6] = self.associated_terminal;
+        bytes[7] = self.clock_name;
+        Ok(bytes[0] as usize)
+    }
+}
+
 /// Clock selector descriptor for selecting between multiple clock sources. (USB Audio Devices 2.0 §4.7.2.2)
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1617,5 +1629,22 @@ mod test {
             Ok(InterfaceAssociationDescriptor::MIN_LEN as usize)
         );
         assert_eq!(InterfaceAssociationDescriptor::try_from_bytes(&bytes), Ok(descriptor));
+    }
+
+    #[test]
+    fn roundtrip_clock_source_descriptor() {
+        let descriptor = ClockSourceDescriptor {
+            clock_id: 0x11,
+            attributes_bitmap: 0x22,
+            controls_bitmap: 0x33,
+            associated_terminal: 0x44,
+            clock_name: 0x55,
+        };
+        let mut bytes = [0u8; ClockSourceDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(ClockSourceDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(ClockSourceDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }
