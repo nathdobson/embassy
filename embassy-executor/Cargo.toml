@@ -36,6 +36,7 @@ build = [
     {target = "armv7a-none-eabi", features = ["platform-cortex-ar", "executor-thread"]},
     {target = "armv7r-none-eabi", features = ["platform-cortex-ar", "executor-thread"]},
     {target = "armv7r-none-eabihf", features = ["platform-cortex-ar", "executor-thread"]},
+    {target = "armv8r-none-eabihf", features = ["platform-cortex-ar", "executor-thread"]},
     {target = "riscv32imac-unknown-none-elf", features = ["platform-riscv32"]},
     {target = "riscv32imac-unknown-none-elf", features = ["platform-riscv32", "executor-thread"]},
     {target = "riscv32imac-unknown-none-elf", features = ["platform-riscv32", "executor-thread", "trace"]},
