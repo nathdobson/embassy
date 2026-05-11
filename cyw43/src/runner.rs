@@ -1208,7 +1208,7 @@ impl<'a, BUS: Bus, CHIP: Chip> Runner<'a, BUS, CHIP> {
         data: &[u8],
         buf: &mut Aligned<A4, [u8; 4 + 2048]>,
     ) {
-        let buf8 = &mut buf[..];
+        let buf8 = &mut buf[4..];
 
         let total_len = SdpcmHeader::SIZE + CdcHeader::SIZE + data.len();
 

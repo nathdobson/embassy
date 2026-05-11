@@ -386,7 +386,7 @@ where
     }
 
     async fn wlan_write(&mut self, buf: &mut Aligned<A4, [u8]>) -> crate::Result<()> {
-        self.cmd53_write(FUNC_WLAN, 0, &mut buf[4..]).await
+        self.cmd53_write(FUNC_WLAN, 0, &buf[4..]).await
     }
 
     async fn bp_read(&mut self, mut addr: u32, data: &mut [u8]) -> crate::Result<()> {
@@ -398,8 +398,6 @@ where
         // To simplify, enforce 4-align for now.
         assert!(addr % 4 == 0);
 
-        // align buffer len
-        // note: safe because align is checked above
         let mut data: &mut Aligned<A4, [u8]> = data.to_mut_aligned();
 
         loop {
@@ -439,8 +437,6 @@ where
         // To simplify, enforce 4-align for now.
         assert!(addr % 4 == 0);
 
-        // align buffer len
-        // note: safe because align is checked above
         let mut data: &Aligned<A4, [u8]> = data.to_aligned();
 
         loop {

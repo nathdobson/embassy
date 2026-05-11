@@ -60,7 +60,7 @@ pub trait ToAligned {
     /// Element
     type Element: ?Sized;
 
-    /// Create the slice
+    /// Create a type-checked aligned value from a value that is aligned.
     fn to_aligned<A: Alignment>(&self) -> &Aligned<A, Self::Element>;
 }
 
@@ -80,7 +80,7 @@ pub trait ToMutAligned {
     /// Element
     type Element: ?Sized;
 
-    /// Create the slice
+    /// Create a type-checked aligned value from a value that is aligned.
     fn to_mut_aligned<A: Alignment>(&mut self) -> &mut Aligned<A, Self::Element>;
 }
 
