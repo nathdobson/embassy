@@ -1073,18 +1073,11 @@ foreach_peripheral!(
     (can, FDCAN3) => { impl_fdcan!(FDCAN3, FDCANRAM3); };
 );
 
-#[cfg(all(not(stm32n6), can_fdcan_v2)]
+#[cfg(can_fdcan_v2)]
 foreach_peripheral!(
     (can, FDCAN1) => { impl_fdcan!(FDCAN1, FDCANRAM, 0x0000); };
     (can, FDCAN2) => { impl_fdcan!(FDCAN2, FDCANRAM, 0x0C00); };
     (can, FDCAN3) => { impl_fdcan!(FDCAN3, FDCANRAM, 0x1800); };
-);
-
-#[cfg(all(stm32n6, can_fdcan_v2)]
-foreach_peripheral!(
-    (can, FDCAN1) => { impl_fdcan!(FDCAN1, FDCANRAM1, 0x0000); };
-    (can, FDCAN2) => { impl_fdcan!(FDCAN2, FDCANRAM1, 0x0C00); };
-    (can, FDCAN3) => { impl_fdcan!(FDCAN3, FDCANRAM1, 0x1800); };
 );
 
 pin_trait!(RxPin, Instance);
