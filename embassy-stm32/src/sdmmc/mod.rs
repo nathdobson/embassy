@@ -948,21 +948,21 @@ impl<'d> Sdmmc<'d> {
         )
     }
 
-    pub(crate) fn set_dlyb_active(&mut self, on: bool) {
+    fn set_dlyb_active(&mut self, on: bool) {
         self.dlyb_active = on;
     }
 
-    pub(crate) fn dlyb_enable_lock(&mut self) -> Result<(), Error> {
+    fn dlyb_enable_lock(&mut self) -> Result<(), Error> {
         let regs = self.dlyb_slot.as_ref().unwrap().regs;
         dlyb::Dlyb::new(regs).enable_lock()
     }
 
-    pub(crate) fn dlyb_set_tap(&mut self, tap: u8) -> Result<(), Error> {
+    fn dlyb_set_tap(&mut self, tap: u8) -> Result<(), Error> {
         let regs = self.dlyb_slot.as_ref().unwrap().regs;
         dlyb::Dlyb::new(regs).set_tap(tap)
     }
 
-    pub(crate) fn dlyb_disable(&mut self) {
+    fn dlyb_disable(&mut self) {
         if let Some(slot) = self.dlyb_slot.as_ref() {
             dlyb::Dlyb::new(slot.regs).disable();
         }
@@ -1002,7 +1002,7 @@ impl Drop for VswitchGuard<'_, '_> {
 impl<'d> Sdmmc<'d> {
     /// True if the driver has switched to UHS-I 1.8V signalling. Always
     /// `false` outside `cfg(sdmmc_uhs)`.
-    pub(crate) fn uhs_active(&self) -> bool {
+    fn uhs_active(&self) -> bool {
         #[cfg(sdmmc_uhs)]
         return self.uhs_active;
         #[cfg(not(sdmmc_uhs))]
@@ -1012,7 +1012,7 @@ impl<'d> Sdmmc<'d> {
     /// Set the CKIN feedback-clock sampling flag (`CLKCR.SELCLKRX`).
     /// Caller must follow with a `clkcr_set_clkdiv` to write the bit.
     /// No-op outside `cfg(sdmmc_uhs)`.
-    pub(crate) fn set_feedback_clk(&mut self, on: bool) {
+    fn set_feedback_clk(&mut self, on: bool) {
         #[cfg(sdmmc_uhs)]
         {
             self.feedback_clk = on;
@@ -1023,7 +1023,7 @@ impl<'d> Sdmmc<'d> {
 
     /// True if this driver owns a UHS-I level-shifter pin. Always
     /// `false` outside `cfg(sdmmc_uhs)`.
-    pub(crate) fn has_vswitch(&self) -> bool {
+    fn has_vswitch(&self) -> bool {
         #[cfg(sdmmc_uhs)]
         return self.vswitch_pin.is_some();
         #[cfg(not(sdmmc_uhs))]
@@ -1032,14 +1032,14 @@ impl<'d> Sdmmc<'d> {
 
     /// True if this driver owns a CKIN feedback-clock pin (gate for the
     /// SDR50 negotiation path). Always `false` outside `cfg(sdmmc_uhs)`.
-    pub(crate) fn has_ckin(&self) -> bool {
+    fn has_ckin(&self) -> bool {
         #[cfg(sdmmc_uhs)]
         return self.ckin_pin.is_some();
         #[cfg(not(sdmmc_uhs))]
         return false;
     }
 
-    pub(crate) fn has_dlyb(&self) -> bool {
+    fn has_dlyb(&self) -> bool {
         #[cfg(sdmmc_dlyb)]
         return self.dlyb_slot.is_some();
         #[cfg(not(sdmmc_dlyb))]
@@ -1050,7 +1050,7 @@ impl<'d> Sdmmc<'d> {
     /// `CLKCR` bits. Called by `acquire()` so that re-init after a card
     /// swap starts from a known 3.3V / SDR12 state. No-op outside
     /// `cfg(sdmmc_uhs)`.
-    pub(crate) fn reset_uhs_state(&mut self) {
+    fn reset_uhs_state(&mut self) {
         #[cfg(sdmmc_uhs)]
         {
             if self.uhs_active {
@@ -1474,7 +1474,7 @@ impl<'d> Sdmmc<'d> {
     /// shifter restored to 3.3V so the caller can retry without UHS.
     #[cfg(sdmmc_uhs)]
     async fn voltage_switch(&mut self) -> Result<(), Error> {
-        use embassy_time::Duration;
+        use crate::wait_for_us;
 
         // CKSTOP fires within microseconds of the CMD11 R1 ack at
         // 400 kHz; a 50 ms ceiling is generous.
@@ -1559,7 +1559,8 @@ impl<'d> Sdmmc<'d> {
         //    busspeed; empirically the very next CPSM command hangs
         //    without a short delay. 1 ms is well above the internal
         //    resync window.
-        embassy_time::Timer::after(Duration::from_millis(1)).await;
+        wait_for_us(1_000).await;
+
         Ok(())
     }
 

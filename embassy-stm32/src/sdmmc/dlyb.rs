@@ -14,27 +14,32 @@ pub(crate) trait SealedDlybInstance<T: Instance> {
     fn release_dll_reset();
 }
 
-use crate::peripherals::{DLYB_SDMMC1, DLYB_SDMMC2, SDMMC1, SDMMC2};
+foreach_peripheral!(
+    (dlybsd, DLYB_SDMMC1) => {
+        impl SealedDlybInstance<crate::peripherals::SDMMC1> for crate::peripherals::DLYB_SDMMC1 {
+            fn regs() -> crate::pac::dlybsd::Dlybsd {
+                crate::pac::DLYB_SDMMC1
+            }
+            fn release_dll_reset() {
+                crate::pac::RCC.miscrstr().modify(|w| w.set_sdmmc1dllrst(false));
+            }
+        }
 
-impl SealedDlybInstance<SDMMC1> for DLYB_SDMMC1 {
-    fn regs() -> crate::pac::dlybsd::Dlybsd {
-        crate::pac::DLYB_SDMMC1
-    }
-    fn release_dll_reset() {
-        crate::pac::RCC.miscrstr().modify(|w| w.set_sdmmc1dllrst(false));
-    }
-}
-impl DlybInstance<SDMMC1> for DLYB_SDMMC1 {}
+        impl DlybInstance<crate::peripherals::SDMMC1> for crate::peripherals::DLYB_SDMMC1 {}
+    };
+    (dlybsd, DLYB_SDMMC2) => {
+        impl SealedDlybInstance<crate::peripherals::SDMMC2> for crate::peripherals::DLYB_SDMMC2 {
+            fn regs() -> crate::pac::dlybsd::Dlybsd {
+                crate::pac::DLYB_SDMMC2
+            }
+            fn release_dll_reset() {
+                crate::pac::RCC.miscrstr().modify(|w| w.set_sdmmc2dllrst(false));
+            }
+        }
 
-impl SealedDlybInstance<SDMMC2> for DLYB_SDMMC2 {
-    fn regs() -> crate::pac::dlybsd::Dlybsd {
-        crate::pac::DLYB_SDMMC2
-    }
-    fn release_dll_reset() {
-        crate::pac::RCC.miscrstr().modify(|w| w.set_sdmmc2dllrst(false));
-    }
-}
-impl DlybInstance<SDMMC2> for DLYB_SDMMC2 {}
+        impl DlybInstance<crate::peripherals::SDMMC2> for crate::peripherals::DLYB_SDMMC2 {}
+    };
+);
 
 pub(crate) struct Dlyb {
     regs: crate::pac::dlybsd::Dlybsd,
