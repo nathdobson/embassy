@@ -12,6 +12,7 @@ use crate::sdmmc::{
     block_size, bus_width_vals, slice8_mut, slice8_ref,
 };
 use crate::time::{Hertz, mhz};
+use crate::try_until::try_until;
 
 impl TypedResp for R3 {
     type Word = u32;
@@ -665,18 +666,19 @@ impl<'a, 'b, A: Addressable> StorageDevice<'a, 'b, A> {
 
         self.sdmmc.complete_datapath_transfer(transfer, true).await?;
 
-        // TODO: Make this configurable
-        let mut timeout: u32 = 0x00FF_FFFF;
+        // Wait for up to 100 ms
+        try_until(
+            async || {
+                let Ok(status) = self.sdmmc.read_status(self.info.get_address()) else {
+                    return false;
+                };
 
-        while timeout > 0 {
-            let status: CardStatus<A::Ext> = self.sdmmc.read_status(self.info.get_address())?.into();
-            if status.ready_for_data() {
-                return Ok(());
-            }
-            timeout -= 1;
-        }
-
-        Err(Error::SoftwareTimeout)
+                CardStatus::<A::Ext>::from(status).ready_for_data()
+            },
+            500_000,
+        )
+        .await
+        .map_err(|_| Error::SoftwareTimeout)
     }
 
     /// Probe whether [`Config::use_cmd23`] will engage on this device.
@@ -742,17 +744,19 @@ impl<'a, 'b, A: Addressable> StorageDevice<'a, 'b, A> {
         }
         self.sdmmc.clear_interrupt_flags();
 
-        // TODO: Make this configurable
-        let mut timeout: u32 = 0x00FF_FFFF;
+        // Wait for up to 100 ms
+        try_until(
+            async || {
+                let Ok(status) = self.sdmmc.read_status(self.info.get_address()) else {
+                    return false;
+                };
 
-        while timeout > 0 {
-            let status: CardStatus<A::Ext> = self.sdmmc.read_status(self.info.get_address())?.into();
-            if status.ready_for_data() {
-                return Ok(());
-            }
-            timeout -= 1;
-        }
-        Err(Error::SoftwareTimeout)
+                CardStatus::<A::Ext>::from(status).ready_for_data()
+            },
+            500_000,
+        )
+        .await
+        .map_err(|_| Error::SoftwareTimeout)
     }
 }
 

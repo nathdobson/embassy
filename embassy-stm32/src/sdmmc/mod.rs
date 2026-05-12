@@ -28,6 +28,8 @@ use crate::interrupt::typelevel::Interrupt;
 use crate::pac::sdmmc::Sdmmc as RegBlock;
 use crate::rcc::{self, RccInfo, RccPeripheral, SealedRccPeripheral};
 use crate::time::Hertz;
+#[cfg(sdmmc_uhs)]
+use crate::try_until::try_until;
 use crate::{block_for_us, interrupt, peripherals};
 
 /// Module for SD and EMMC cards
@@ -1447,17 +1449,13 @@ impl<'d> Sdmmc<'d> {
     #[cfg(sdmmc_uhs)]
     async fn wait_status_flag(
         &self,
-        timeout: embassy_time::Duration,
+        micros: u64,
         check: impl Fn(crate::pac::sdmmc::regs::Star) -> bool,
     ) -> Result<(), Error> {
         let regs = self.info.regs;
-        embassy_time::with_timeout(timeout, async {
-            while !check(regs.star().read()) {
-                embassy_time::Timer::after(embassy_time::Duration::from_micros(100)).await;
-            }
-        })
-        .await
-        .map_err(|_| Error::VoltageSwitchFailed)
+        try_until(async || check(regs.star().read()), micros)
+            .await
+            .map_err(|_| Error::VoltageSwitchFailed)
     }
 
     /// Run the UHS-I voltage-switch (CMD11) handshake against the card,
@@ -1480,10 +1478,10 @@ impl<'d> Sdmmc<'d> {
 
         // CKSTOP fires within microseconds of the CMD11 R1 ack at
         // 400 kHz; a 50 ms ceiling is generous.
-        const CKSTOP_TIMEOUT: Duration = Duration::from_millis(50);
+        const CKSTOP_TIMEOUT: u64 = 50_000;
         // VSWEND fires after the hardware-managed 5 ms clock-low hold
         // plus the 1 ms post-restart sampling window — ~6 ms typical.
-        const VSWEND_TIMEOUT: Duration = Duration::from_millis(50);
+        const VSWEND_TIMEOUT: u64 = 50_000;
 
         let regs = self.info.regs;
 
