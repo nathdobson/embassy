@@ -7,13 +7,14 @@
 //!
 //! This module provides functionality to poll BOOTSEL from an embassy application.
 
+use core::mem;
+
+use rp_pac::IO_QSPI;
+use rp_pac::io::regs::{GpioCtrl, GpioStatus};
+use rp_pac::io::vals::Oeover;
+
 use crate::Peri;
 use crate::flash::in_ram;
-use core::mem;
-use rp_pac::IO_QSPI;
-use rp_pac::io::regs::GpioCtrl;
-use rp_pac::io::regs::GpioStatus;
-use rp_pac::io::vals::Oeover;
 
 /// Reads the BOOTSEL button. Returns true if the button is pressed.
 ///
