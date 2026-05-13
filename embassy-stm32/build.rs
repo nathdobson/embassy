@@ -1549,6 +1549,18 @@ fn main() {
             });
         }
 
+        if regs.kind == "dlybsd"
+            && let Some(peri) = p.name.strip_prefix("DLYB_")
+            && peripheral_map.contains_key(peri)
+        {
+            let peri = format_ident!("{}", peri);
+            let dlyb = format_ident!("{}", p.name);
+
+            g.extend(quote! {
+                impl_dlyb_instance!(#peri, #dlyb);
+            });
+        }
+
         for pin in p.pins {
             let mut key = (regs.kind, pin.signal);
 
