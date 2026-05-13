@@ -291,12 +291,12 @@ pub struct DeviceDescriptorPartial {
 }
 
 impl ExtendableDescriptor for DeviceDescriptorPartial {
-    const MIN_LEN: u8 = DeviceDescriptor::MIN_LEN;
+    // `max_packet_size0` is at byte 7.
+    const MIN_LEN: u8 = 8;
 }
 
 impl USBDescriptor for DeviceDescriptorPartial {
-    // `max_packet_size0` is at byte 7.
-    const BUF_SIZE: usize = 8;
+    const BUF_SIZE: usize = Self::MIN_LEN as usize;
     const DESC_TYPE: u8 = DeviceDescriptor::DESC_TYPE;
     type Error = DescriptorError;
 
@@ -1088,6 +1088,33 @@ mod test {
 
         let mut sv = ShowDescriptors {};
         cfg.visit_descriptors(&mut sv).unwrap();
+    }
+
+    #[test]
+    fn read_device_descriptor_partial() {
+        let descriptor = DeviceDescriptor {
+            bcd_usb: 0x1122,
+            device_class: 0x33,
+            device_subclass: 0x44,
+            device_protocol: 0x55,
+            max_packet_size0: 0x66,
+            vendor_id: 0x7788,
+            product_id: 0x99aa,
+            bcd_device: 0xbbcc,
+            manufacturer: 0xdd,
+            product: 0xee,
+            serial_number: 0xff,
+            num_configurations: 0x00,
+        };
+        let mut bytes = [0u8; DeviceDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(DeviceDescriptor::MIN_LEN as usize)
+        );
+        assert_eq!(
+            DeviceDescriptorPartial::try_from_bytes(&bytes[..DeviceDescriptorPartial::BUF_SIZE]),
+            Ok(DeviceDescriptorPartial { max_packet_size0: 0x66 })
+        );
     }
 
     #[test]
