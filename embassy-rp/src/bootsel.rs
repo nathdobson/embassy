@@ -93,7 +93,7 @@ mod ram_helpers {
     }
 
     #[cfg(not(target_arch = "arm"))]
-    pub unsafe fn read_cs_status() -> GpioStatus {
+    pub unsafe fn read_cs_status(cs_gpio: *mut (), cs_ctrl: u32) -> u32 {
         unimplemented!()
     }
 }
