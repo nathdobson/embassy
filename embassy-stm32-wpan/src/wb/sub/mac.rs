@@ -1,17 +1,20 @@
 use core::ptr;
 
-use embassy_futures::poll_once;
 use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
 
-use crate::cmd::CmdPacket;
-use crate::consts::TlPacketType;
-use crate::evt::{EvtBox, EvtPacket};
 use crate::mac::commands::MacCommand;
 use crate::mac::event::MacEvent;
 use crate::mac::typedefs::MacError;
-use crate::tables::{MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER};
-use crate::unsafe_linked_list::LinkedListNode;
-use crate::wb::Flag;
+use crate::util::Flag;
+use crate::wb::channels::cpu1::IPCC_MAC_802_15_4_CMD_RSP_CHANNEL;
+use crate::wb::cmd::CmdPacket;
+use crate::wb::consts::TlPacketType;
+use crate::wb::evt::{self, EvtBox, EvtPacket};
+use crate::wb::tables::{
+    MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER, Mac802_15_4Table, TL_MAC_802_15_4_TABLE,
+    TL_TRACES_TABLE, TRACES_EVT_QUEUE, TracesTable,
+};
+use crate::wb::unsafe_linked_list::LinkedListNode;
 
 static MAC_EVT_OUT: Flag = Flag::new(false);
 
@@ -25,11 +28,6 @@ impl<'a> Mac<'a> {
         ipcc_mac_802_15_4_cmd_rsp_channel: IpccTxChannel<'a>,
         ipcc_mac_802_15_4_notification_ack_channel: IpccRxChannel<'a>,
     ) -> Self {
-        use crate::tables::{
-            MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER, Mac802_15_4Table, TL_MAC_802_15_4_TABLE,
-            TL_TRACES_TABLE, TRACES_EVT_QUEUE, TracesTable,
-        };
-
         unsafe {
             LinkedListNode::init_head(TRACES_EVT_QUEUE.as_mut_ptr() as *mut _);
 
@@ -117,42 +115,41 @@ impl<'a> MacRx<'a> {
     ///
     /// This function will stall if the previous `EvtBox` has not been dropped
     pub async fn read(&mut self) -> Result<MacEvent<'a>, ()> {
-        // Wait for the last event box to be dropped
         MAC_EVT_OUT.wait_for_low().await;
 
         // Return a new event box
         self.ipcc_mac_802_15_4_notification_ack_channel
-            .receive(
-                || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
-                    MAC_EVT_OUT.set_high();
-
-                    Some(MacEvent::new(EvtBox::new(
-                        MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
-                    )))
-                },
-                true,
-            )
+            .receive(|| unsafe {
+                Some(MacEvent::new(EvtBox::new(
+                    MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
+                )))
+            })
             .await
     }
 }
 
-/// SAFETY: passing a pointer to something other than a managed event packet is UB
-pub(crate) unsafe fn drop_mac_event() {
-    trace!("mac drop event");
+impl<'a> evt::MemoryManager for Mac<'a> {
+    unsafe fn new_event_packet(evt: *mut EvtPacket) {
+        if ptr::eq(evt, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _) {
+            MAC_EVT_OUT.set_high();
+        }
+    }
 
-    // Write the ack
-    CmdPacket::write_into(
-        MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
-        TlPacketType::OtAck,
-        0,
-        &[],
-    );
+    unsafe fn drop_event_packet(evt: *mut EvtPacket) {
+        if ptr::eq(evt, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _) {
+            trace!("mac drop event");
 
-    // Clear the rx flag
-    let _ = poll_once(Ipcc::receive::<()>(3, || None, false));
+            // Write the ack
+            CmdPacket::write_into(
+                MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
+                TlPacketType::OtAck,
+                0,
+                &[],
+            );
 
-    // Allow a new read call
-    MAC_EVT_OUT.set_low();
+            // Clear the rx flag
+            Ipcc::clear(IPCC_MAC_802_15_4_CMD_RSP_CHANNEL as u8);
+            MAC_EVT_OUT.set_low();
+        }
+    }
 }

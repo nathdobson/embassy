@@ -41,8 +41,6 @@ pub mod adc4;
 
 use embassy_hal_internal::drop::OnDrop;
 
-#[allow(unused)]
-pub(self) use crate::block_for_us as blocking_delay_us;
 pub use crate::pac::adc::vals;
 #[cfg(any(adc_v2, adc_g4, adc_g0, adc_c0, adc_f3v1))]
 pub use crate::pac::adc::vals::Exten;
@@ -578,7 +576,7 @@ impl<'d, T: Instance<Regs: InjectedAdcRegs>> Adc<'d, T> {
         injected_trigger: InjectedAdcTrigger<T>,
         injected_interrupt: bool,
     ) -> (RingBufferedAdc<'a, T::Regs>, InjectedAdc<'b, T::Regs>) {
-        unsafe {
+        let ret = unsafe {
             (
                 Self {
                     adc: self.adc.clone_unchecked(),
@@ -589,7 +587,11 @@ impl<'d, T: Instance<Regs: InjectedAdcRegs>> Adc<'d, T> {
                 }
                 .setup_injected_conversions(injected_sequence, injected_trigger, injected_interrupt),
             )
-        }
+        };
+
+        core::mem::forget(self);
+
+        ret
     }
 }
 

@@ -18,6 +18,7 @@ include!(concat!(env!("OUT_DIR"), "/_macros.rs"));
 // Utilities
 mod macros;
 pub mod time;
+mod wait;
 /// Operating modes for peripherals.
 pub mod mode {
     trait SealedMode {}
@@ -92,6 +93,8 @@ pub mod dac;
 pub mod dcmi;
 #[cfg(dcmipp)]
 pub mod dcmipp;
+#[cfg(dlybsd)]
+pub mod dlyb;
 #[cfg(dma2d)]
 pub mod dma2d;
 #[cfg(dsihost)]
@@ -120,6 +123,11 @@ pub mod i2c;
 pub mod i2s;
 #[cfg(any(stm32wb, stm32wl5x))]
 pub mod ipcc;
+// Limited to N6 for now — on H7 the metapac entry for JPEG has `rcc: None`
+// (no RccPeripheral impl is generated), and the DMA signal names differ
+// (INFIFO/OUTFIFO vs N6's RX/TX). Broaden once stm32-data is updated.
+#[cfg(all(jpeg, stm32n6))]
+pub mod jpeg;
 #[cfg(lcd)]
 pub mod lcd;
 #[cfg(feature = "low-power")]
@@ -863,10 +871,4 @@ fn init_hw(config: Config) -> Peripherals {
 
         p
     })
-}
-
-/// Performs a busy-wait delay for a specified number of microseconds.
-#[allow(unused)]
-pub(crate) fn block_for_us(us: u64) {
-    cortex_m::asm::delay(unsafe { rcc::get_freqs().sys.to_hertz().unwrap().0 as u64 * us / 1_000_000 } as u32);
 }

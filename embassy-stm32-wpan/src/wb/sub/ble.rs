@@ -1,36 +1,34 @@
 #[cfg(feature = "bt-hci")]
 use core::cell::RefCell;
+#[cfg(feature = "bt-hci")]
+use core::future::poll_fn;
 use core::ptr;
 #[cfg(feature = "bt-hci")]
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
+use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
 #[cfg(feature = "bt-hci")]
 use embassy_sync::blocking_mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(feature = "bt-hci")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::mutex::{Mutex, MutexGuard};
+#[cfg(feature = "bt-hci")]
+use embassy_sync::mutex::Mutex;
 #[cfg(feature = "bt-hci")]
 use embassy_sync::signal::Signal;
-use hci::Opcode;
+#[cfg(feature = "bt-hci")]
+use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::cmd::CmdPacket;
-use crate::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
-use crate::evt;
-use crate::evt::{EvtBox, EvtPacket, EvtStub};
 use crate::sub::mm;
-use crate::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
-use crate::unsafe_linked_list::LinkedListNode;
-use crate::wb::Flag;
+use crate::util::Flag;
+use crate::wb::channels::cpu1::IPCC_HCI_ACL_DATA_CHANNEL;
+use crate::wb::cmd::CmdPacket;
+use crate::wb::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
+use crate::wb::evt;
+use crate::wb::evt::{EvtBox, EvtPacket};
+use crate::wb::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
+use crate::wb::unsafe_linked_list::LinkedListNode;
 
 static ACL_EVT_OUT: Flag = Flag::new(false);
-static ACL_MUTEX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
-
-async fn lock_acl() -> MutexGuard<'static, CriticalSectionRawMutex, ()> {
-    ACL_EVT_OUT.wait_for_low().await;
-    ACL_MUTEX.lock().await
-}
 
 /// A guard that, once constructed, may be used to send BLE commands to CPU2.
 ///
@@ -122,18 +120,15 @@ impl<'a> Ble<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Self> {
         self.ipcc_ble_event_channel
-            .receive(
-                || unsafe {
-                    if let Some(node_ptr) =
-                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                    {
-                        Some(EvtBox::new(node_ptr.cast()))
-                    } else {
-                        None
-                    }
-                },
-                false,
-            )
+            .receive(|| unsafe {
+                if let Some(node_ptr) =
+                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                {
+                    Some(EvtBox::new(node_ptr.cast()))
+                } else {
+                    None
+                }
+            })
             .await
     }
 
@@ -148,10 +143,8 @@ impl<'a> Ble<'a> {
 
     /// `TL_BLE_SendAclData`
     pub async fn acl_write(&mut self, handle: u16, payload: &[u8]) {
-        let _guard = lock_acl().await;
-
         self.ipcc_hci_acl_tx_data_channel
-            .send(|| unsafe {
+            .send_exclusive(|| unsafe {
                 CmdPacket::write_into(
                     HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _,
                     TlPacketType::AclData,
@@ -164,48 +157,39 @@ impl<'a> Ble<'a> {
 
     /// `TL_BLE_AclNot`
     pub async fn acl_read(&mut self) -> EvtBox<Self> {
-        let _guard = lock_acl().await;
-
+        ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
-            .receive(
-                || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
-                    ACL_EVT_OUT.set_high();
-
-                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                },
-                true,
-            )
+            .receive(|| unsafe { Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _)) })
             .await
     }
 }
 
 impl<'a> evt::MemoryManager for Ble<'a> {
+    unsafe fn new_event_packet(evt: *mut EvtPacket) {
+        if ptr::eq(evt, HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _) {
+            ACL_EVT_OUT.set_high();
+        }
+    }
+
     /// SAFETY: passing a pointer to something other than a managed event packet is UB
     unsafe fn drop_event_packet(evt: *mut EvtPacket) {
         if ptr::eq(evt, HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _) {
+            Ipcc::clear(IPCC_HCI_ACL_DATA_CHANNEL as u8);
             ACL_EVT_OUT.set_low();
 
             return;
         }
 
-        let stub = unsafe {
-            let p_evt_stub = &(*evt).evt_serial as *const _ as *const EvtStub;
-
-            ptr::read_volatile(p_evt_stub)
-        };
-
+        let stub = unsafe { EvtBox::read_stub(evt) };
         if !(stub.evt_code == TL_BLEEVT_CS_OPCODE || stub.evt_code == TL_BLEEVT_CC_OPCODE) {
             mm::MemoryManager::drop_event_packet(evt);
         }
     }
 }
 
-pub extern crate stm32wb_hci as hci;
-
-impl<'a> hci::Controller for Ble<'a> {
-    async fn controller_write(&mut self, opcode: Opcode, payload: &[u8]) {
+#[cfg(feature = "wb-hci")]
+impl<'a> stm32wb_hci::Controller for Ble<'a> {
+    async fn controller_write(&mut self, opcode: stm32wb_hci::Opcode, payload: &[u8]) {
         self.tl_write(opcode.0, payload).await;
     }
 
@@ -246,43 +230,31 @@ impl<'a> BleRx<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Ble<'a>> {
         self.ipcc_ble_event_channel
-            .receive(
-                || unsafe {
-                    if let Some(node_ptr) =
-                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                    {
-                        Some(EvtBox::new(node_ptr.cast()))
-                    } else {
-                        None
-                    }
-                },
-                false,
-            )
+            .receive(|| unsafe {
+                if let Some(node_ptr) =
+                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                {
+                    Some(EvtBox::new(node_ptr.cast()))
+                } else {
+                    None
+                }
+            })
             .await
     }
 
     /// `TL_BLE_AclNot`
     pub async fn acl_read(&mut self) -> EvtBox<Ble<'a>> {
-        let _guard = lock_acl().await;
-
+        ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
-            .receive(
-                || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
-                    ACL_EVT_OUT.set_high();
-
-                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                },
-                true,
-            )
+            .receive(|| unsafe { Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _)) })
             .await
     }
 }
 
+#[cfg(feature = "wb-hci")]
 /// Implement Controller for TX (Write only)
-impl<'a> hci::Controller for BleTx<'a> {
-    async fn controller_write(&mut self, opcode: Opcode, payload: &[u8]) {
+impl<'a> stm32wb_hci::Controller for BleTx<'a> {
+    async fn controller_write(&mut self, opcode: stm32wb_hci::Opcode, payload: &[u8]) {
         self.tl_write(opcode.0, payload).await;
     }
 
@@ -291,9 +263,10 @@ impl<'a> hci::Controller for BleTx<'a> {
     }
 }
 
+#[cfg(feature = "wb-hci")]
 /// Implement Controller for RX (Read only)
-impl<'a> hci::Controller for BleRx<'a> {
-    async fn controller_write(&mut self, _opcode: Opcode, _payload: &[u8]) {
+impl<'a> stm32wb_hci::Controller for BleRx<'a> {
+    async fn controller_write(&mut self, _opcode: stm32wb_hci::Opcode, _payload: &[u8]) {
         panic!("BleRx cannot write!");
     }
 
@@ -305,61 +278,145 @@ impl<'a> hci::Controller for BleRx<'a> {
 }
 
 #[cfg(feature = "bt-hci")]
-const ERR0: bt_hci::cmd::Error<embedded_io::ErrorKind> = bt_hci::cmd::Error::Io(ERR1);
-#[cfg(feature = "bt-hci")]
-const ERR1: embedded_io::ErrorKind = embedded_io::ErrorKind::InvalidData;
-
-#[cfg(feature = "bt-hci")]
-const SLOTS: usize = 3;
-
-#[cfg(feature = "bt-hci")]
-pub struct AtomicController<'d> {
+pub struct ControllerAdapter<'d> {
     hw_ipcc_ble_cmd_channel: Mutex<NoopRawMutex, IpccTxChannel<'d>>,
     ipcc_ble_event_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
     ipcc_hci_acl_tx_data_channel: Mutex<NoopRawMutex, IpccTxChannel<'d>>,
     ipcc_hci_acl_rx_data_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
-    slots: blocking_mutex::NoopMutex<RefCell<[Option<bt_hci::cmd::Opcode>; SLOTS]>>,
-    signals: [Signal<NoopRawMutex, Option<EvtBox<Ble<'d>>>>; SLOTS],
-    acl_pending: AtomicBool,
+    slot: blocking_mutex::NoopMutex<RefCell<Option<bt_hci::cmd::Opcode>>>,
+    signal: Signal<NoopRawMutex, Option<EvtBox<Ble<'d>>>>,
+    waker: AtomicWaker,
+    pending_evt: blocking_mutex::NoopMutex<RefCell<Option<EvtBox<Ble<'d>>>>>,
+    cc_no_status: AtomicBool,
 }
 
 #[cfg(feature = "bt-hci")]
-impl<'d> AtomicController<'d> {
-    pub const fn new(controller: Ble<'d>) -> Self {
+impl<'d> embedded_io::ErrorType for ControllerAdapter<'d> {
+    type Error = embedded_io::ErrorKind;
+}
+
+#[cfg(feature = "bt-hci")]
+struct SlotGuard<'d, 'a> {
+    controller: &'a ControllerAdapter<'d>,
+}
+
+#[cfg(feature = "bt-hci")]
+impl<'d, 'a> Drop for SlotGuard<'d, 'a> {
+    fn drop(&mut self) {
+        self.controller.slot.borrow().borrow_mut().take();
+        self.controller.signal.reset();
+        self.controller.waker.wake();
+    }
+}
+
+#[cfg(feature = "bt-hci")]
+impl<'d> ControllerAdapter<'d> {
+    pub fn new(controller: Ble<'d>) -> Self {
         Self {
             hw_ipcc_ble_cmd_channel: Mutex::new(controller.hw_ipcc_ble_cmd_channel),
             ipcc_ble_event_channel: Mutex::new(controller.ipcc_ble_event_channel),
             ipcc_hci_acl_tx_data_channel: Mutex::new(controller.ipcc_hci_acl_tx_data_channel),
             ipcc_hci_acl_rx_data_channel: Mutex::new(controller.ipcc_hci_acl_rx_data_channel),
-            slots: blocking_mutex::NoopMutex::const_new(NoopRawMutex::new(), RefCell::new([None; SLOTS])),
-            signals: [Signal::new(), Signal::new(), Signal::new()],
-            acl_pending: AtomicBool::new(false),
+            slot: blocking_mutex::NoopMutex::const_new(NoopRawMutex::new(), RefCell::new(None)),
+            signal: Signal::new(),
+            waker: AtomicWaker::new(),
+            pending_evt: blocking_mutex::NoopMutex::const_new(NoopRawMutex::new(), RefCell::new(None)),
+            cc_no_status: AtomicBool::new(false),
         }
     }
 
-    fn grab_slot(&self, opcode: bt_hci::cmd::Opcode) -> (usize, &Signal<NoopRawMutex, Option<EvtBox<Ble<'d>>>>) {
-        let mut slots = self.slots.borrow().borrow_mut();
-        let ((index, slot), signal) = slots
-            .iter_mut()
-            .enumerate()
-            .zip(self.signals.iter())
-            .filter(|((_, slot), _)| slot.is_none())
-            .next()
-            .unwrap();
+    async fn grab_slot<'a>(&'a self, opcode: bt_hci::cmd::Opcode) -> SlotGuard<'d, 'a> {
+        use core::task::Poll;
 
-        *slot = Some(opcode);
+        poll_fn(|cx| {
+            self.waker.register(cx.waker());
 
-        (index, signal)
+            let mut slot = self.slot.borrow().borrow_mut();
+
+            if slot.is_some() || self.cc_no_status.load(Ordering::Acquire) {
+                Poll::Pending
+            } else {
+                *slot = Some(opcode);
+
+                Poll::Ready(SlotGuard { controller: self })
+            }
+        })
+        .await
+    }
+
+    fn signal_cmd(&self, opcode: bt_hci::cmd::Opcode, evt: EvtBox<Ble<'d>>) {
+        use bt_hci::cmd::Cmd;
+        use bt_hci::cmd::controller_baseband::Reset;
+
+        let slot = self.slot.borrow().borrow_mut();
+
+        if let Some(waiting_opcode) = *slot
+            && waiting_opcode == opcode
+        {
+            self.signal.signal(Some(evt));
+        } else if slot.is_some() && opcode == Reset::OPCODE {
+            self.signal.signal(None);
+        }
+    }
+
+    async fn read_pkt(
+        &self,
+    ) -> Result<(EvtBox<Ble<'d>>, bt_hci::ControllerToHostPacket<'static>), embedded_io::ErrorKind> {
+        use bt_hci::{ControllerToHostPacket, FromHciBytes};
+
+        use crate::util::to_err;
+
+        let evt: EvtBox<Ble<'d>> = self
+            .ipcc_ble_event_channel
+            .lock()
+            .await
+            .receive(|| unsafe {
+                if let Some(node_ptr) =
+                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                {
+                    Some(EvtBox::new(node_ptr.cast()))
+                } else {
+                    None
+                }
+            })
+            .await;
+
+        let serial = evt.serial();
+        let buf = unsafe { core::slice::from_raw_parts(serial as *const _ as *const u8, serial.len()) };
+
+        Ok((
+            evt,
+            ControllerToHostPacket::from_hci_bytes(buf)
+                .map_err(to_err)
+                .map(|(pkt, _)| pkt)?,
+        ))
+    }
+
+    async fn read_status(
+        &self,
+        _guard: &SlotGuard<'d, '_>,
+    ) -> Result<bt_hci::event::CommandCompleteWithStatus<'_>, bt_hci::cmd::Error<embedded_io::ErrorKind>> {
+        use bt_hci::cmd::Error as CmdError;
+        use bt_hci::param::Error as ParamError;
+
+        use crate::util::make_cc_with_cs;
+
+        let evt = self
+            .signal
+            .wait()
+            .await
+            .ok_or(CmdError::Hci(ParamError::OPERATION_CANCELLED_BY_HOST))?;
+
+        // Packets with CC or CS opcode are not managed by the memory manager
+        let evt_serial = evt.serial();
+        let evt_serial = unsafe { core::slice::from_raw_parts(evt_serial as *const _ as *const u8, evt_serial.len()) };
+
+        make_cc_with_cs(evt_serial)
     }
 }
 
 #[cfg(feature = "bt-hci")]
-impl<'d> embedded_io::ErrorType for AtomicController<'d> {
-    type Error = embedded_io::ErrorKind;
-}
-
-#[cfg(feature = "bt-hci")]
-impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
+impl<'d> bt_hci::controller::Controller for ControllerAdapter<'d> {
     async fn write_acl_data(&self, packet: &bt_hci::data::AclPacket<'_>) -> Result<(), Self::Error> {
         use bt_hci::WriteHci;
         use bt_hci::transport::WithIndicator;
@@ -368,12 +425,9 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
             .lock()
             .await
             .send_exclusive(|| unsafe {
-                WithIndicator::new(packet)
-                    .write_hci(CmdPacket::writer(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                    .map_err(|_| ERR0)
+                WithIndicator::new(packet).write_hci(CmdPacket::writer(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
             })
             .await
-            .map_err(|_| ERR1)
     }
 
     async fn write_iso_data(&self, _packet: &bt_hci::data::IsoPacket<'_>) -> Result<(), Self::Error> {
@@ -385,125 +439,81 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
     }
 
     async fn read<'a>(&self, buf: &'a mut [u8]) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
-        use core::sync::atomic::Ordering;
-
-        use bt_hci::cmd::Cmd;
-        use bt_hci::cmd::controller_baseband::Reset;
-        use bt_hci::event::{CommandComplete, CommandCompleteWithStatus, CommandStatus, EventKind};
+        use bt_hci::event::{CommandComplete, CommandStatus, EventKind};
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
         use embassy_futures::select::{Either, select};
 
-        let signal_cmd = |opcode: bt_hci::cmd::Opcode, evt: EvtBox<Ble<'d>>| {
-            let slots = self.slots.borrow().borrow_mut();
+        use crate::util::to_err;
 
-            if opcode == Reset::OPCODE {
-                for (slot, signal) in slots.iter().zip(self.signals.iter()) {
-                    if slot.is_some() {
-                        signal.signal(None);
-                    }
-                }
-            } else {
-                for (slot, signal) in slots.iter().zip(self.signals.iter()) {
-                    if let Some(waiting_opcode) = slot
-                        && *waiting_opcode == opcode
-                    {
-                        signal.signal(Some(evt));
-
-                        return;
-                    }
-                }
-            }
-        };
-
-        let make_pkt =
-            |buf: &'a mut [u8], evt: EvtBox<Ble<'d>>| -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
-                let serial = evt.serial();
-                buf[..serial.len()].copy_from_slice(serial);
-
-                let (pkt, _) = ControllerToHostPacket::from_hci_bytes(buf).map_err(|_| ERR1)?;
-
-                Ok(pkt)
-            };
-
-        // SAFETY: buf is written and returned in both branches
-        let buf2 = unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len()) };
         match select(
             async {
                 loop {
-                    let evt: EvtBox<Ble<'d>> = self
-                        .ipcc_ble_event_channel
-                        .lock()
-                        .await
-                        .receive(
-                            || unsafe {
-                                if let Some(node_ptr) =
-                                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                                {
-                                    Some(EvtBox::new(node_ptr.cast()))
-                                } else {
-                                    None
-                                }
-                            },
-                            false,
-                        )
-                        .await;
+                    // Drop the pending evt so that the memory manager can clean it up
+                    self.pending_evt.borrow().borrow_mut().take();
+                    if self.cc_no_status.swap(false, Ordering::AcqRel) {
+                        self.waker.wake();
+                    }
 
-                    let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(|_| ERR1)?;
+                    let (evt, pkt) = self.read_pkt().await?;
 
                     match pkt {
                         ControllerToHostPacket::Event(ref event) => match event.kind {
                             EventKind::CommandComplete => {
-                                let e = CommandComplete::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
+                                let e = CommandComplete::from_hci_bytes_complete(event.data).map_err(to_err)?;
                                 if !e.has_status() {
-                                    return make_pkt(buf, evt);
-                                }
-                                let e: CommandCompleteWithStatus =
-                                    e.try_into().map_err(|_| embedded_io::ErrorKind::InvalidData)?;
+                                    // Store the pending event and block commands until the next read
+                                    self.cc_no_status.store(true, Ordering::Release);
+                                    self.pending_evt.borrow().borrow_mut().replace(evt);
 
-                                signal_cmd(e.cmd_opcode, evt);
+                                    return Ok(pkt);
+                                }
+
+                                self.signal_cmd(e.cmd_opcode, evt);
                                 continue;
                             }
                             EventKind::CommandStatus => {
-                                let e = CommandStatus::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
+                                let e = CommandStatus::from_hci_bytes_complete(event.data).map_err(to_err)?;
 
-                                signal_cmd(e.cmd_opcode, evt);
+                                self.signal_cmd(e.cmd_opcode, evt);
                                 continue;
                             }
                             _ => {
-                                return make_pkt(buf, evt);
+                                // Store the pending event so that it isn't dropped until the next read
+                                self.pending_evt.borrow().borrow_mut().replace(evt);
+
+                                return Ok(pkt);
                             }
                         },
                         _ => {
-                            return make_pkt(buf, evt);
+                            // Store the pending event so that it isn't dropped until the next read
+                            self.pending_evt.borrow().borrow_mut().replace(evt);
+
+                            return Ok(pkt);
                         }
                     }
                 }
             },
             async {
-                unsafe {
-                    // This entire block is unsafe because we must copy out the event immediately so that it is not
-                    // trashed by a pending command.
+                self.ipcc_hci_acl_rx_data_channel
+                    .lock()
+                    .await
+                    .receive(|| unsafe {
+                        // We must copy out the event immediately so that it is not trashed by a pending command.
 
-                    // When combined with the `close` flag, the expected behavior is that this will only receive
-                    // data while the future is active.
-                    let evt: EvtBox<Ble<'d>> = self
-                        .ipcc_hci_acl_rx_data_channel
-                        .lock()
-                        .await
-                        .receive(
-                            || {
-                                if !self.acl_pending.fetch_not(Ordering::AcqRel) {
-                                    None
-                                } else {
-                                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                                }
-                            },
-                            true,
+                        let buf = core::slice::from_raw_parts_mut(buf as *mut _ as *mut u8, buf.len());
+                        let evt: EvtBox<Ble<'d>> = EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _);
+                        let serial = evt.serial();
+                        buf[..serial.len()].copy_from_slice(serial);
+
+                        // rx will be cleared by evt box drop
+
+                        Some(
+                            ControllerToHostPacket::from_hci_bytes(buf)
+                                .map(|(pkt, _)| pkt)
+                                .map_err(to_err),
                         )
-                        .await;
-
-                    make_pkt(buf2, evt)
-                }
+                    })
+                    .await
             },
         )
         .await
@@ -515,21 +525,18 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
 }
 
 #[cfg(feature = "bt-hci")]
-impl<'d, C> bt_hci::controller::ControllerCmdSync<C> for AtomicController<'d>
+impl<'d, C> bt_hci::controller::ControllerCmdSync<C> for ControllerAdapter<'d>
 where
     C: bt_hci::cmd::SyncCmd,
 {
     async fn exec(&self, cmd: &C) -> Result<C::Return, bt_hci::cmd::Error<Self::Error>> {
-        use bt_hci::event::{CommandComplete, CommandCompleteWithStatus, EventKind};
+        use bt_hci::cmd::Error as CmdError;
         use bt_hci::transport::WithIndicator;
-        use bt_hci::{ControllerToHostPacket, FromHciBytes, WriteHci, cmd};
-        use embassy_hal_internal::drop::OnDrop;
+        use bt_hci::{WriteHci, cmd};
 
-        let (index, signal) = self.grab_slot(C::OPCODE);
-        let _guard = OnDrop::new(|| {
-            self.signals[index].reset();
-            self.slots.borrow().borrow_mut()[index] = None
-        });
+        debug!("Executing sync command with opcode {:x}", C::OPCODE.0);
+
+        let guard = self.grab_slot(C::OPCODE).await;
 
         self.hw_ipcc_ble_cmd_channel
             .lock()
@@ -537,47 +544,33 @@ where
             .send(|| unsafe {
                 WithIndicator::new(cmd)
                     .write_hci(CmdPacket::writer(BLE_CMD_BUFFER.as_mut_ptr()))
-                    .map_err(|_| ERR0)
+                    .map_err(CmdError::Io)
             })
             .await?;
 
-        let evt = signal.wait().await.ok_or(ERR0)?;
+        let e = self.read_status(&guard).await?;
 
-        let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(|_| ERR0)?;
-
-        let ControllerToHostPacket::Event(ref event) = pkt else {
-            return Err(ERR0);
-        };
-
-        if event.kind != EventKind::CommandComplete {
-            return Err(ERR0);
-        }
-
-        let e = CommandComplete::from_hci_bytes_complete(event.data).map_err(|_| ERR0)?;
-        let e: CommandCompleteWithStatus = e.try_into().map_err(|_| ERR0)?;
+        trace!("returned ccws: {:?}", e.status);
 
         let r = e.to_result::<C>().map_err(cmd::Error::Hci)?;
-        // info!("Done executing command with opcode {}", C::OPCODE);
+        debug!("Done executing command with opcode {:x}", C::OPCODE.0);
         Ok(r)
     }
 }
 
 #[cfg(feature = "bt-hci")]
-impl<'d, C> bt_hci::controller::ControllerCmdAsync<C> for AtomicController<'d>
+impl<'d, C> bt_hci::controller::ControllerCmdAsync<C> for ControllerAdapter<'d>
 where
     C: bt_hci::cmd::AsyncCmd,
 {
     async fn exec(&self, cmd: &C) -> Result<(), bt_hci::cmd::Error<Self::Error>> {
-        use bt_hci::event::{CommandStatus, EventKind};
+        use bt_hci::WriteHci;
+        use bt_hci::cmd::Error as CmdError;
         use bt_hci::transport::WithIndicator;
-        use bt_hci::{ControllerToHostPacket, FromHciBytes, WriteHci};
-        use embassy_hal_internal::drop::OnDrop;
 
-        let (index, signal) = self.grab_slot(C::OPCODE);
-        let _guard = OnDrop::new(|| {
-            self.signals[index].reset();
-            self.slots.borrow().borrow_mut()[index] = None
-        });
+        debug!("Executing async command with opcode {:x}", C::OPCODE.0);
+
+        let guard = self.grab_slot(C::OPCODE).await;
 
         self.hw_ipcc_ble_cmd_channel
             .lock()
@@ -585,27 +578,17 @@ where
             .send(|| unsafe {
                 WithIndicator::new(cmd)
                     .write_hci(CmdPacket::writer(BLE_CMD_BUFFER.as_mut_ptr()))
-                    .map_err(|_| ERR0)
+                    .map_err(CmdError::Io)
             })
             .await?;
 
-        let evt = signal.wait().await.ok_or(ERR0)?;
+        let e = self.read_status(&guard).await?;
 
-        let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(|_| ERR0)?;
-
-        let ControllerToHostPacket::Event(ref event) = pkt else {
-            return Err(ERR0);
-        };
-
-        if event.kind != EventKind::CommandStatus {
-            return Err(ERR0);
-        }
-
-        let e = CommandStatus::from_hci_bytes_complete(event.data).map_err(|_| ERR0)?;
+        trace!("returned ccws: {:?}", e.status);
 
         e.status.to_result()?;
 
-        // info!("Done executing command with opcode {}", C::OPCODE);
+        debug!("Done executing command with opcode {:x}", C::OPCODE.0);
         Ok(())
     }
 }
