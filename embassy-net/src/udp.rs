@@ -8,16 +8,18 @@ use smoltcp::iface::{Interface, SocketHandle};
 use smoltcp::socket::udp;
 pub use smoltcp::socket::udp::{PacketMetadata, UdpMetadata};
 use smoltcp::wire::IpListenEndpoint;
-
+use thiserror::Error;
 use crate::{Stack, TryError};
 
 /// Error returned by [`UdpSocket::bind`].
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum BindError {
     /// The socket was already open.
+    #[error("invalid state")]
     InvalidState,
     /// No route to host.
+    #[error("no route")]
     NoRoute,
 }
 
@@ -150,7 +152,10 @@ impl<'a> UdpSocket<'a> {
     /// If no datagram is available, this method will return `Err(TryError::WouldBlock)`.
     ///
     /// Returns the number of bytes received and the remote endpoint.
-    pub fn try_recv_from(&self, buf: &mut [u8]) -> Result<(usize, UdpMetadata), TryError<RecvError>> {
+    pub fn try_recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(usize, UdpMetadata), TryError<RecvError>> {
         self.with_mut(|s, _| match s.recv_slice(buf) {
             Ok((n, meta)) => Ok((n, meta)),
             Err(udp::RecvError::Truncated) => Err(TryError::Other(RecvError::Truncated)),
@@ -313,7 +318,12 @@ impl<'a> UdpSocket<'a> {
     /// If the socket's send buffer is too small to fit `buf`, this method will return `Poll::Ready(Err(SendError::PacketTooLarge))`
     ///
     /// When the remote endpoint is not reachable, this method will return `Poll::Ready(Err(Error::NoRoute))`.
-    pub fn poll_send_to<T>(&self, buf: &[u8], remote_endpoint: T, cx: &mut Context<'_>) -> Poll<Result<(), SendError>>
+    pub fn poll_send_to<T>(
+        &self,
+        buf: &[u8],
+        remote_endpoint: T,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SendError>>
     where
         T: Into<UdpMetadata>,
     {
@@ -350,7 +360,12 @@ impl<'a> UdpSocket<'a> {
     /// If the socket's send buffer is too small to fit `max_size`, this method will return `Err(SendError::PacketTooLarge)`
     ///
     /// When the remote endpoint is not reachable, this method will return `Err(SendError::NoRoute)`
-    pub async fn send_to_with<T, F, R>(&mut self, max_size: usize, remote_endpoint: T, f: F) -> Result<R, SendError>
+    pub async fn send_to_with<T, F, R>(
+        &mut self,
+        max_size: usize,
+        remote_endpoint: T,
+        f: F,
+    ) -> Result<R, SendError>
     where
         T: Into<UdpMetadata> + Copy,
         F: FnOnce(&mut [u8]) -> (usize, R),
@@ -399,7 +414,12 @@ impl<'a> UdpSocket<'a> {
     /// If the socket's send buffer is too small to fit `size`, this method will return `Err(TryError::Other(SendError::PacketTooLarge))`
     ///
     /// When the remote endpoint is not reachable, this method will return `Err(TryError::Other(SendError::NoRoute))`
-    pub fn try_send_to_with<T, F, R>(&mut self, size: usize, remote_endpoint: T, f: F) -> Result<R, TryError<SendError>>
+    pub fn try_send_to_with<T, F, R>(
+        &mut self,
+        size: usize,
+        remote_endpoint: T,
+        f: F,
+    ) -> Result<R, TryError<SendError>>
     where
         T: Into<UdpMetadata>,
         F: FnOnce(&mut [u8]) -> R,
