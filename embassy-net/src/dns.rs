@@ -4,20 +4,10 @@
 //! Prefer using [`Stack::dns_query`](crate::Stack::dns_query) directly if you're
 //! not using `embedded-nal-async`.
 
-<<<<<<< HEAD
-use heapless::Vec;
-pub use smoltcp::socket::dns::{DnsQuery, Socket};
-pub(crate) use smoltcp::socket::dns::{GetQueryResultError, StartQueryError};
-pub use smoltcp::wire::{DnsQueryType, IpAddress};
-use crate::Stack;
-
-/// Errors returned by DnsSocket.
-=======
 pub(crate) use xarxa::dns::{GetQueryResultError, StartQueryError};
 pub use xarxa::wire::{DnsType as DnsQueryType, IpAddress};
 
 /// Errors returned by DnsClient.
->>>>>>> upstream/main
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {

@@ -3,14 +3,6 @@
 use core::future::{Future, poll_fn};
 use core::task::{Context, Poll};
 
-<<<<<<< HEAD
-use smoltcp::iface::{Interface, SocketHandle};
-use smoltcp::socket::udp;
-pub use smoltcp::socket::udp::{PacketMetadata, UdpMetadata};
-use smoltcp::wire::IpListenEndpoint;
-use thiserror::Error;
-use crate::{Stack, TryError};
-=======
 pub use xarxa::driver::PacketMeta;
 #[cfg(feature = "iface-bind")]
 pub use xarxa::iface::IfaceHandle;
@@ -20,31 +12,25 @@ use xarxa::wire::IpListenEndpoint;
 
 use crate::wire::IpEndpoint;
 use crate::{Full, Stack, TryError};
->>>>>>> upstream/main
 
 /// Error returned by [`UdpSocket::bind`].
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Error)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum BindError {
-<<<<<<< HEAD
-    /// The socket was already open.
-    #[error("invalid state")]
-    InvalidState,
-    /// No route to host.
-    #[error("no route")]
-    NoRoute,
-=======
     /// The socket is already bound.
+    // #[error("invalid state")]
     InvalidState,
     /// Another socket holds an identical 4-tuple.
+    // #[error("Another socket holds an identical 4-tuple")]
     InUse,
     /// No free port in the ephemeral range (only possible with tens of thousands
     /// of bound sockets).
+    // #[error("No free port in the ephemeral range (only possible with tens of thousands of bound sockets).")]
     NoFreePorts,
     /// The local and remote addresses belong to different address families, or no
     /// local address is available for the given remote.
+    // #[error("The local and remote addresses belong to different address families, or no local address is available for the given remote.")]
     Unaddressable,
->>>>>>> upstream/main
 }
 
 /// Error returned by [`UdpSocket::send_to`].
@@ -212,16 +198,8 @@ impl<'d> UdpSocket<'d> {
     /// If no datagram is available, this method will return `Err(TryError::WouldBlock)`.
     ///
     /// Returns the number of bytes received and the remote endpoint.
-<<<<<<< HEAD
-    pub fn try_recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> Result<(usize, UdpMetadata), TryError<RecvError>> {
-        self.with_mut(|s, _| match s.recv_slice(buf) {
-=======
     pub fn try_recv_from(&self, buf: &mut [u8]) -> Result<(usize, UdpMetadata), TryError<RecvError>> {
         self.with_mut(|s| match s.recv_slice(buf) {
->>>>>>> upstream/main
             Ok((n, meta)) => Ok((n, meta)),
             Err(udp::RecvError::InvalidState) => Err(TryError::Other(RecvError::InvalidState)),
             #[cfg(feature = "icmp-errors")]
@@ -418,18 +396,8 @@ impl<'d> UdpSocket<'d> {
     ///
     /// If the datagram does not fit in a packet buffer, this method will return `Poll::Ready(Err(SendError::BufferFull))`
     ///
-<<<<<<< HEAD
-    /// When the remote endpoint is not reachable, this method will return `Poll::Ready(Err(Error::NoRoute))`.
-    pub fn poll_send_to<T>(
-        &self,
-        buf: &[u8],
-        remote_endpoint: T,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), SendError>>
-=======
     /// When the remote endpoint is not reachable, this method will return `Poll::Ready(Err(SendError::Unaddressable))`.
     pub fn poll_send_to<T>(&self, buf: &[u8], remote_endpoint: T, cx: &mut Context<'_>) -> Poll<Result<(), SendError>>
->>>>>>> upstream/main
     where
         T: Into<UdpMetadata>,
     {
@@ -452,18 +420,8 @@ impl<'d> UdpSocket<'d> {
     ///
     /// If `max_size` does not fit in a packet buffer, this method will return `Err(SendError::BufferFull)`
     ///
-<<<<<<< HEAD
-    /// When the remote endpoint is not reachable, this method will return `Err(SendError::NoRoute)`
-    pub async fn send_to_with<T, F, R>(
-        &mut self,
-        max_size: usize,
-        remote_endpoint: T,
-        f: F,
-    ) -> Result<R, SendError>
-=======
     /// When the remote endpoint is not reachable, this method will return `Err(SendError::Unaddressable)`
     pub async fn send_to_with<T, F, R>(&mut self, max_size: usize, remote_endpoint: T, f: F) -> Result<R, SendError>
->>>>>>> upstream/main
     where
         T: Into<UdpMetadata> + Copy,
         F: FnOnce(&mut [u8]) -> (usize, R),
@@ -498,18 +456,8 @@ impl<'d> UdpSocket<'d> {
     ///
     /// If `size` does not fit in a packet buffer, this method will return `Err(TryError::Other(SendError::BufferFull))`
     ///
-<<<<<<< HEAD
-    /// When the remote endpoint is not reachable, this method will return `Err(TryError::Other(SendError::NoRoute))`
-    pub fn try_send_to_with<T, F, R>(
-        &mut self,
-        size: usize,
-        remote_endpoint: T,
-        f: F,
-    ) -> Result<R, TryError<SendError>>
-=======
     /// When the remote endpoint is not reachable, this method will return `Err(TryError::Other(SendError::Unaddressable))`
     pub fn try_send_to_with<T, F, R>(&mut self, size: usize, remote_endpoint: T, f: F) -> Result<R, TryError<SendError>>
->>>>>>> upstream/main
     where
         T: Into<UdpMetadata>,
         F: FnOnce(&mut [u8]) -> R,

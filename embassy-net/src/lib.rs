@@ -38,6 +38,7 @@ use core::task::{Context, Poll};
 
 use embassy_sync::waitqueue::WakerRegistration;
 use embassy_time::{Instant, Timer};
+use heapless::Vec;
 #[cfg(feature = "icmp-errors")]
 pub use xarxa::IcmpError;
 use xarxa::driver::{Driver, LinkState};
@@ -279,7 +280,7 @@ impl<'d> Stack<'d> {
             #[cfg(feature = "ipv4")]
             dns::DnsQueryType::A => {
                 if let Ok(ip) = name.parse().map(IpAddress::Ipv4) {
-                    let mut result=Vec::new();
+                    let mut result= Vec::new();
                     result.push(ip).unwrap();
                     return Ok(result);
                 }
@@ -287,7 +288,7 @@ impl<'d> Stack<'d> {
             #[cfg(feature = "ipv6")]
             dns::DnsQueryType::Aaaa => {
                 if let Ok(ip) = name.parse().map(IpAddress::Ipv6) {
-                    let mut result=Vec::new();
+                    let mut result= Vec::new();
                     result.push(ip).unwrap();
                     return Ok(result);
                 }

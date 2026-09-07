@@ -151,7 +151,13 @@ impl<'d> Iface<'d> {
 
     /// The IP addresses assigned to the interface.
     pub fn ip_addrs(&self) -> Vec<IfaceAddr, IFACE_ADDR_COUNT> {
-        self.with(|i| i.ip_addrs().iter().copied().map(IfaceAddr::from_xarxa).collect())
+        self.with(|i|{
+            let mut result=Vec::new();
+            for x in i.ip_addrs().iter().copied().map(IfaceAddr::from_xarxa){
+                result.push(x).unwrap();
+            }
+            result
+        })
     }
 
     /// Whether the given address is assigned to the interface.

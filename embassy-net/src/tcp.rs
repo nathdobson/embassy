@@ -6,15 +6,7 @@ use core::mem;
 use core::task::{Context, Poll};
 
 use embassy_time::Duration;
-<<<<<<< HEAD
-use smoltcp::iface::{Interface, SocketHandle};
-use smoltcp::socket::tcp;
-pub use smoltcp::socket::tcp::State;
-use smoltcp::wire::{IpEndpoint, IpListenEndpoint};
 use thiserror::Error;
-use crate::time::duration_to_smoltcp;
-use crate::{Stack, TryError};
-=======
 #[cfg(feature = "iface-bind")]
 pub use xarxa::iface::IfaceHandle;
 #[cfg(feature = "tcp-listener")]
@@ -27,7 +19,6 @@ use xarxa::wire::{IpEndpoint, IpListenEndpoint};
 
 use crate::time::duration_to_xarxa;
 use crate::{Full, Stack, TryError};
->>>>>>> upstream/main
 
 /// Error returned by TcpSocket read/write functions.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -43,19 +34,18 @@ pub enum Error {
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectError {
-<<<<<<< HEAD
     /// The socket is already connected or listening.
     #[error("socket is already connected or listening")]
-=======
-    /// The socket is already open.
->>>>>>> upstream/main
     InvalidState,
     /// No route to the remote host, or the remote endpoint is unspecified.
+    #[error("No route to the remote host, or the remote endpoint is unspecified.")]
     Unaddressable,
     /// No free port in the ephemeral range (only possible with tens of thousands
     /// of open sockets).
+    #[error("No free port in the ephemeral range (only possible with tens of thousands of open sockets).")]
     NoFreePorts,
     /// Another socket already holds an identical 4-tuple.
+    #[error("Another socket already holds an identical 4-tuple.")]
     InUse,
     /// The remote host rejected the connection with a RST packet.
     #[error("connection reset")]
@@ -63,12 +53,6 @@ pub enum ConnectError {
     /// Connect timed out.
     #[error("connect timed out")]
     TimedOut,
-<<<<<<< HEAD
-    /// No route to host.
-    #[error("no route to host")]
-    NoRoute,
-=======
->>>>>>> upstream/main
 }
 
 /// Error returned by [`TcpListener::listen`].
