@@ -6,7 +6,7 @@ mod fmt;
 
 pub use embassy_boot::{
     AlignedBuffer, BlockingFirmwareState, BlockingFirmwareUpdater, BootError, BootLoaderConfig, FirmwareState,
-    FirmwareUpdater, FirmwareUpdaterConfig, State,
+    FirmwareUpdater, FirmwareUpdaterConfig, FirmwareUpdaterError, State,
 };
 use embassy_rp::Peri;
 use embassy_rp::flash::{Blocking, ERASE_SIZE, Flash};
@@ -80,6 +80,11 @@ impl<'d, const SIZE: usize> WatchdogFlash<'d, SIZE> {
             watchdog,
             timeout,
         }
+    }
+
+    /// Split back into separate flash and watchdog.
+    pub fn split(self) -> (Flash<'d, FLASH, Blocking, SIZE>, Watchdog) {
+        (self.flash, self.watchdog)
     }
 }
 

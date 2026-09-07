@@ -31,32 +31,27 @@ pub use pac::uarte::vals::{Baudrate, ConfigParity as Parity};
 
 use crate::gpio::{AnyPin, Pin as GpioPin};
 use crate::interrupt::typelevel::Interrupt;
-use crate::uarte::{Config, Instance as UarteInstance, configure, configure_rx_pins, configure_tx_pins, drop_tx_rx};
-use crate::{EASY_DMA_SIZE, interrupt, pac};
+use crate::uarte::{
+    Config, DMA_SIZE, Instance as UarteInstance, configure, configure_rx_pins, configure_tx_pins, drop_tx_rx,
+};
+use crate::{interrupt, pac};
 
 pub(crate) struct State {
     tx_buf: RingBuffer,
     tx_count: AtomicUsize,
 
     rx_buf: RingBuffer,
+    /// Whether a RX DMA transfer is currently in progress.
     rx_started: AtomicBool,
 }
 
 /// UART error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     // No errors for now
 }
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {}
-    }
-}
-
-impl core::error::Error for Error {}
 
 impl State {
     pub(crate) const fn new() -> Self {
@@ -77,7 +72,6 @@ pub struct InterruptHandler<U: UarteInstance> {
 
 impl<U: UarteInstance> interrupt::typelevel::Handler<U::Interrupt> for InterruptHandler<U> {
     unsafe fn on_interrupt() {
-        info!("irq: start");
         let r = U::regs();
         let ss = U::state();
         let s = U::buffered_state();
@@ -96,31 +90,35 @@ impl<U: UarteInstance> interrupt::typelevel::Handler<U::Interrupt> for Interrupt
                 }
             }
 
-            let first_run = !s.rx_started.swap(true, Ordering::Relaxed);
-            if r.events_dma().rx().end().read() != 0 || first_run {
+            if r.events_dma().rx().end().read() != 0 {
                 //trace!("  irq_rx: endrx");
                 r.events_dma().rx().end().write_value(0);
 
-                if !first_run {
+                if s.rx_started.swap(false, Ordering::Relaxed) {
                     // Received some bytes, wake task.
                     let rxed = r.dma().rx().amount().read().amount() as usize;
                     rx.push_done(rxed);
                     ss.rx_waker.wake();
                 }
+            }
 
+            if !s.rx_started.load(Ordering::Relaxed) {
                 let (ptr, len) = rx.push_buf();
-                if len == 0 {
-                    panic!("BufferedUarte buffer overrun");
+
+                // If the buffer is full, leave the DMA stopped. `consume()` pends the interrupt
+                // again once the user has freed up some space.
+                if len != 0 {
+                    let len = min(len, half_len);
+
+                    // Set up the DMA read
+                    r.dma().rx().ptr().write_value(ptr as u32);
+                    r.dma().rx().maxcnt().write(|w| w.set_maxcnt(len as _));
+
+                    s.rx_started.store(true, Ordering::Relaxed);
+
+                    // manually start
+                    r.tasks_dma().rx().start().write_value(1);
                 }
-
-                let len = if len > half_len { half_len } else { len };
-
-                // Set up the DMA read
-                r.dma().rx().ptr().write_value(ptr as u32);
-                r.dma().rx().maxcnt().write(|w| w.set_maxcnt(len as _));
-
-                // manually start
-                r.tasks_dma().rx().start().write_value(1);
             }
         }
 
@@ -141,7 +139,7 @@ impl<U: UarteInstance> interrupt::typelevel::Handler<U::Interrupt> for Interrupt
             // If not TXing, start.
             if s.tx_count.load(Ordering::Relaxed) == 0 {
                 let (ptr, len) = tx.pop_buf();
-                let len = len.min(EASY_DMA_SIZE);
+                let len = len.min(DMA_SIZE);
                 if len != 0 {
                     //trace!("  irq_tx: starting {:?}", len);
                     s.tx_count.store(len, Ordering::Relaxed);
@@ -514,9 +512,10 @@ impl<'d, U: UarteInstance> BufferedUarteRx<'d, U> {
 
         // Initialize state
         let s = U::buffered_state();
-        let rx_len = rx_buffer.len().min(EASY_DMA_SIZE * 2);
+        let rx_len = rx_buffer.len().min(DMA_SIZE * 2);
         let rx_ptr = rx_buffer.as_mut_ptr();
         unsafe { s.rx_buf.init(rx_ptr, rx_len) };
+        s.rx_started.store(false, Ordering::Relaxed);
 
         // clear errors
         let errors = r.errorsrc().read();
@@ -582,6 +581,11 @@ impl<'d, U: UarteInstance> BufferedUarteRx<'d, U> {
         let s = U::buffered_state();
         let mut rx = unsafe { s.rx_buf.reader() };
         rx.pop_done(amt);
+
+        // If the DMA is stopped because the buffer was full, restart it now that there's space.
+        if !s.rx_started.load(Ordering::Relaxed) {
+            U::Interrupt::pend();
+        }
     }
 
     /// we are ready to read if there is data in the buffer

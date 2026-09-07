@@ -18,6 +18,7 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::aes::{self, Aes};
 use embassy_stm32::peripherals::{AES as AesPeriph, PKA as PkaPeriph};
@@ -26,11 +27,16 @@ use embassy_stm32::rcc::{self};
 use embassy_stm32::rng::{self, Rng};
 use embassy_stm32::{Config, bind_interrupts};
 use embassy_stm32_wpan::bluetooth::HCI;
+use embassy_stm32_wpan::bluetooth::gap::types::OwnAddressType;
 use embassy_stm32_wpan::bluetooth::gap::{AdvData, AdvParams, AdvType, GapEvent};
+use embassy_stm32_wpan::bluetooth::gap_init::{AddressType, GapInitParams};
 use embassy_stm32_wpan::bluetooth::gatt::{CharProperties, GattEventMask, SecurityPermissions, ServiceType, Uuid};
 use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, Platform, new_platform};
+use panic_probe as _;
 use stm32wb_hci::event::ConnectionRole;
-use {defmt_rtt as _, panic_probe as _};
+
+// ---- Test configuration ----
+const ADDR_TYPE: OwnAddressType = OwnAddressType::Random;
 
 bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
@@ -39,12 +45,6 @@ bind_interrupts!(struct Irqs {
     RADIO => HighInterruptHandler;
     HASH => LowInterruptHandler;
 });
-
-/// RNG runner task
-#[embassy_executor::task]
-async fn rng_runner_task(platform: &'static Platform) {
-    platform.run_rng().await
-}
 
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
@@ -64,23 +64,29 @@ async fn main(spawner: Spawner) {
     // Initialize hardware peripherals required by BLE stack
     let (platform, runtime) = new_platform!(
         Rng::new(p.RNG, Irqs),
+        Pka::new(p.PKA, Irqs),
         Aes::new_blocking(p.AES, Irqs),
-        Pka::new_blocking(p.PKA, Irqs),
         8
     );
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
 
-    // Spawn the RNG runner task
-    spawner.spawn(rng_runner_task(platform).expect("Failed to spawn rng runner"));
-
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task(platform).expect("Failed to spawn BLE runner"));
 
     // Initialize BLE stack
-    let mut ble = HCI::new(platform, runtime, Irqs)
-        .await
-        .expect("BLE initialization failed");
+    let mut ble = match ADDR_TYPE {
+        OwnAddressType::Public => {
+            let gap_params = GapInitParams {
+                bd_addr: [0x01, 0x00, 0x00, 0xE1, 0x80, 0x00],
+                address_type: AddressType::Public,
+                ..GapInitParams::default()
+            };
+            HCI::new_with_gap_params(platform, runtime, Irqs, gap_params).await
+        }
+        _ => HCI::new(platform, runtime, Irqs).await,
+    }
+    .expect("BLE initialization failed");
 
     // Initialize GATT server with a simple service
     let mut gatt = ble.gatt_server();
@@ -125,6 +131,7 @@ async fn main(spawner: Spawner) {
         interval_min: 0x0050, // 50 ms
         interval_max: 0x0050,
         adv_type: AdvType::ConnectableUndirected,
+        own_addr_type: ADDR_TYPE,
         ..AdvParams::default()
     };
 
@@ -168,7 +175,7 @@ async fn main(spawner: Spawner) {
                 GapEvent::Disconnected { handle, reason } => {
                     info!("=== DISCONNECTION ===");
                     info!("  Handle: 0x{:04X}", handle.0);
-                    info!("  Reason: 0x{:02X} ({})", reason, disconnect_reason_str(reason));
+                    info!("  Reason: 0x{:02X} ({})", reason.as_u8(), Display2Format(&reason));
                     info!("  Active connections: {}", ble.connections().count());
 
                     // Restart advertising after disconnection.
@@ -211,21 +218,5 @@ async fn main(spawner: Spawner) {
             // Log other events for debugging
             debug!("Other BLE Event: {:?}", event);
         }
-    }
-}
-
-/// Convert disconnect reason code to human-readable string
-fn disconnect_reason_str(reason: u8) -> &'static str {
-    match reason {
-        0x08 => "Connection Timeout",
-        0x13 => "Remote User Terminated",
-        0x14 => "Remote Low Resources",
-        0x15 => "Remote Power Off",
-        0x16 => "Local Host Terminated",
-        0x1A => "Unsupported Remote Feature",
-        0x3B => "Unacceptable Connection Parameters",
-        0x3D => "MIC Failure",
-        0x3E => "Connection Failed to Establish",
-        _ => "Unknown",
     }
 }

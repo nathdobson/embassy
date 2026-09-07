@@ -13,10 +13,12 @@ pub const VDDA_CALIB_MV: u32 = 3300;
 pub const ADC_MAX: u32 = (1 << 12) - 1;
 // No calibration data for F103, voltage should be 1.2v
 pub const VREF_INT: u32 = 1200;
+// `CR2.EXTSEL` value selecting the software trigger for the regular group.
+const EXTSEL_SWSTART: u8 = 0b111;
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<T>,
 }
 
 impl<T: DefaultInstance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
@@ -42,11 +44,19 @@ impl AdcRegs for crate::pac::adc::Adc {
     }
 
     fn enable(&self) {
-        self.cr2().modify(|reg| {
-            reg.set_adon(true);
-        });
+        // 11.3.1: "Conversion starts when ADON bit is set for a second time by
+        // software after ADC power-up". `Adc::new()` already sets ADON once, so
+        // writing it again here would spuriously kick off a conversion of whatever
+        // sequence/mode happens to be configured at that moment -- before the caller
+        // has finished configuring DMA/triggers for the real one. Only pulse ADON
+        // when it is genuinely off.
+        if !self.cr2().read().adon() {
+            self.cr2().modify(|reg| {
+                reg.set_adon(true);
+            });
 
-        block_for_us(3);
+            block_for_us(3);
+        }
     }
 
     fn start(&self) {
@@ -60,21 +70,19 @@ impl AdcRegs for crate::pac::adc::Adc {
         });
     }
 
-    fn stop(&self, _disable: bool) {
-        // Stop ADC
+    fn stop(&self) {
         self.cr2().modify(|reg| {
-            // Stop ADC
             reg.set_swstart(false);
-            // Stop ADC
-            reg.set_adon(false);
-            // Stop DMA
             reg.set_dma(false);
         });
 
         self.cr1().modify(|w| {
-            // Disable interrupt for end of conversion
             w.set_eocie(false);
         });
+    }
+
+    fn power_down(&self) {
+        self.cr2().modify(|reg| reg.set_adon(false));
     }
 
     fn wait_done(&self) -> bool {
@@ -89,8 +97,9 @@ impl AdcRegs for crate::pac::adc::Adc {
         });
 
         self.cr1().modify(|w| {
-            // Enable end of conversion interrupt only in repeated mode.
-            w.set_eocie(true);
+            // Enable end-of-conversion interrupt only for the interrupt-driven
+            // single conversion
+            w.set_eocie(matches!(conversion_mode, ConversionMode::NoDma));
             // Scanning conversions of multiple channels.
             w.set_scan(true);
             // Disable discontinuous mode.
@@ -100,12 +109,18 @@ impl AdcRegs for crate::pac::adc::Adc {
         self.cr2().modify(|w| {
             // Enable DMA mode
             w.set_dma(!matches!(conversion_mode, ConversionMode::NoDma));
-            // EOC flag is set at the end of each conversion.
-            w.set_cont(false);
+            // Free-running only when repeating without an external trigger.
+            w.set_cont(matches!(conversion_mode, ConversionMode::Repeated(None)));
+            // Select the trigger
+            match conversion_mode {
+                ConversionMode::Repeated(Some((trigger, _edge))) => w.set_extsel(trigger),
+                _ => w.set_extsel(EXTSEL_SWSTART),
+            }
+            w.set_exttrig(true);
         });
     }
 
-    fn configure_sequence(&self, sequence: impl ExactSizeIterator<Item = ((u8, bool), SampleTime)>) {
+    fn configure_sequence(&self, sequence: impl ExactSizeIterator<Item = ((u8, bool), SampleTime)>, injected: bool) {
         let mut sqr1 = Sqr1::default();
         let mut sqr2 = Sqr2::default();
         let mut sqr3 = Sqr3::default();
@@ -113,15 +128,19 @@ impl AdcRegs for crate::pac::adc::Adc {
         let mut smpr1 = Smpr1::default();
         let mut smpr2 = Smpr2::default();
 
-        // Check the sequence is long enough
-        sqr1.set_l((sequence.len() - 1).try_into().unwrap());
+        if !injected {
+            // Check the sequence is long enough
+            sqr1.set_l((sequence.len() - 1).try_into().unwrap());
+        }
 
         for (i, ((ch, _), sample_time)) in sequence.enumerate() {
-            match i {
-                0..=5 => sqr3.set_sq(i, ch),
-                6..=11 => sqr2.set_sq(i - 6, ch),
-                12..=15 => sqr1.set_sq(i - 12, ch),
-                _ => unreachable!(),
+            if !injected {
+                match i {
+                    0..=5 => sqr3.set_sq(i, ch),
+                    6..=11 => sqr2.set_sq(i - 6, ch),
+                    12..=15 => sqr1.set_sq(i - 12, ch),
+                    _ => unreachable!(),
+                }
             }
 
             let sample_time = sample_time.into();
@@ -132,9 +151,11 @@ impl AdcRegs for crate::pac::adc::Adc {
             }
         }
 
-        self.sqr1().write_value(sqr1);
-        self.sqr2().write_value(sqr2);
-        self.sqr3().write_value(sqr3);
+        if !injected {
+            self.sqr1().write_value(sqr1);
+            self.sqr2().write_value(sqr2);
+            self.sqr3().write_value(sqr3);
+        }
         self.smpr1().write_value(smpr1);
         self.smpr2().write_value(smpr2);
     }

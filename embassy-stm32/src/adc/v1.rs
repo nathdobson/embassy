@@ -19,7 +19,7 @@ pub const VREF_INT: u32 = 1230;
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: DefaultInstance> {
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<T>,
 }
 
 impl<T: DefaultInstance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
@@ -99,7 +99,7 @@ impl AdcRegs for crate::pac::adc::Adc {
         self.cr().modify(|reg| reg.set_adstart(true));
     }
 
-    fn stop(&self, _disable: bool) {
+    fn stop(&self) {
         // Stop conversion
         while self.cr().read().addis() {}
 
@@ -122,6 +122,13 @@ impl AdcRegs for crate::pac::adc::Adc {
         }
 
         self.cfgr1().modify(|w| w.set_awden(false));
+    }
+
+    fn power_down(&self) {
+        if self.cr().read().aden() {
+            self.cr().modify(|reg| reg.set_addis(true));
+            while self.cr().read().aden() {}
+        }
     }
 
     fn wait_done(&self) -> bool {
@@ -153,7 +160,7 @@ impl AdcRegs for crate::pac::adc::Adc {
         });
     }
 
-    fn configure_sequence(&self, sequence: impl ExactSizeIterator<Item = ((u8, bool), SampleTime)>) {
+    fn configure_sequence(&self, sequence: impl ExactSizeIterator<Item = ((u8, bool), SampleTime)>, _injected: bool) {
         let mut is_ordered_up = true;
         let mut is_ordered_down = true;
 
@@ -180,6 +187,8 @@ impl AdcRegs for crate::pac::adc::Adc {
             is_ordered_up || is_ordered_down,
             "F0/L0 channels must be passed in order.",
         );
+
+        self.smpr().modify(|reg| reg.set_smp(sample_time.into()));
 
         self.cfgr1().modify(|w| {
             w.set_scandir(if is_ordered_up {
@@ -239,21 +248,6 @@ impl<'d, T: DefaultInstance> Adc<'d, T> {
         s
     }
 
-    /// Power down the ADC.
-    ///
-    /// This stops ADC operation and powers down ADC-specific circuitry.
-    /// Later reads will enable the ADC again, but internal measurement paths
-    /// such as VREFINT or temperature sensing may need to be re-enabled.
-    pub fn power_down(&mut self) {
-        T::regs().stop(false);
-
-        let r = T::regs();
-        if r.cr().read().aden() {
-            r.cr().modify(|reg| reg.set_addis(true));
-            while r.cr().read().aden() {}
-        }
-    }
-
     #[cfg(not(adc_l0))]
     pub fn enable_vbat(&mut self) -> Vbat {
         // SMP must be ≥ 56 ADC clock cycles when using HSI14.
@@ -295,6 +289,11 @@ impl<'d, T: DefaultInstance> Adc<'d, T> {
 
     pub fn set_resolution(&mut self, resolution: Resolution) {
         T::regs().cfgr1().modify(|reg| reg.set_res(resolution.into()));
+    }
+
+    /// Read the currently configured resolution for this ADC driver and return it.
+    pub fn resolution(&self) -> Resolution {
+        T::regs().cfgr1().read().res().into()
     }
 
     #[cfg(adc_l0)]

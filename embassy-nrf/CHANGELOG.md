@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## Unreleased - ReleaseDate
 
+- bugfix: enforce each peripheral's own EasyDMA `MAXCNT` limit in uarte, buffered_uarte, spim, spis, twim, twis, i2s, pdm, pwm and saadc instead of the chip-wide `DMA_SIZE`.
+- added: per-peripheral `DMA_SIZE` constants in the `uarte`, `spim`, `spis`, `twim`, `twis`, `i2s`, `pdm` and `saadc` modules, and `pwm::MAX_SEQUENCE_LEN`.
+- removed: the crate-level `DMA_SIZE` constant. It was wrong because the max DMA size changes per peripheral.
+- added: System OFF support for the nRF54L series.
+- bugfix: buffered_uarte: nRF54: reset the RX state when creating a `BufferedUarteRx`, so recreating one after dropping it receives data again.
+- bugfix: buffered_uarte: nRF54: stop the RX DMA and resume it on `consume()` when the RX buffer fills up, instead of panicking.
+- bugfix: usb: don't re-arm OUT endpoints twice per packet, which could silently drop received packets under load.
+- bugfix: usb: apply the nRF52840 Erratum 199 workaround around USBD EasyDMA transfers.
+- changed: allow configuring I2S in master mode without master clock output pin
+
+## 0.11.0 - 2026-06-16
+
+- added: support for the SQSPI peripheral for nRF54.
+- added: support for the nRF54 VPR coprocessor, including loading and running programs and issuing bare opcodes
+- added: USB support for nRF54LM20A (via embassy-usb-synopsys-otg)
+- added: `nfc-pins-as-gpio` support for nrf54
+- added: support for rand-core 0.10
+- bugfix: fix cracen on nRF54LM20A
+- bugfix: nrf91: fix erratum 36
+- bugfix: fix GRTC time driver for nRF54L/LM series
+- bugfix: fix GRTC syscounter reset on init and select the last GRTC CC channel
+- bugfix: nrf54: provide explicit timer Capture/Compare channel numbers
+- bugfix: pwm: put pins into high-z on drop
+- changed: update nrf-pac
+
 ## 0.10.0 - 2026-03-10
 
 - feat: implement CryptoCell RNG driver (nrf52840, nrf5340, nrf9120, nrf9160)
@@ -48,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * added: expose uicr write functions
 * added: support for nrf54lm20a
 - added: support buffered rram for nrf54
+- changed: removed unused generic from `Saadc::run_timer_sample`
 
 ## 0.8.0 - 2025-09-30
 
@@ -178,4 +204,3 @@ Support for chip-specific features:
   - nrf52840
   - nrf5340
   - nrf9160
-

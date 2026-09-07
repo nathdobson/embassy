@@ -16,6 +16,7 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::aes::{self, Aes};
 use embassy_stm32::peripherals::{AES as AesPeriph, PKA as PkaPeriph};
@@ -24,10 +25,15 @@ use embassy_stm32::rcc::{self};
 use embassy_stm32::rng::{self, Rng};
 use embassy_stm32::{Config, bind_interrupts};
 use embassy_stm32_wpan::bluetooth::HCI;
+use embassy_stm32_wpan::bluetooth::gap::types::OwnAddressType;
 use embassy_stm32_wpan::bluetooth::gap::{ParsedAdvData, ScanParams, ScanType};
+use embassy_stm32_wpan::bluetooth::gap_init::{AddressType, GapInitParams, GapRole};
 use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, Platform, new_platform};
+use panic_probe as _;
 use stm32wb_hci::Event;
-use {defmt_rtt as _, panic_probe as _};
+
+// ---- Test configuration ----
+const ADDR_TYPE: OwnAddressType = OwnAddressType::Random;
 
 bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
@@ -36,12 +42,6 @@ bind_interrupts!(struct Irqs {
     RADIO => HighInterruptHandler;
     HASH => LowInterruptHandler;
 });
-
-/// RNG runner task
-#[embassy_executor::task]
-async fn rng_runner_task(platform: &'static Platform) {
-    platform.run_rng().await
-}
 
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
@@ -61,23 +61,30 @@ async fn main(spawner: Spawner) {
     // Initialize hardware peripherals required by BLE stack
     let (platform, runtime) = new_platform!(
         Rng::new(p.RNG, Irqs),
+        Pka::new(p.PKA, Irqs),
         Aes::new_blocking(p.AES, Irqs),
-        Pka::new_blocking(p.PKA, Irqs),
         8
     );
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
 
-    // Spawn the RNG runner task
-    spawner.spawn(rng_runner_task(platform).expect("Failed to spawn rng runner"));
-
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task(platform).expect("Failed to spawn BLE runner"));
 
-    // Initialize BLE stack
-    let mut ble = HCI::new(platform, runtime, Irqs)
-        .await
-        .expect("BLE initialization failed");
+    // Initialize BLE stack in Observer role (required for ACI_GAP_START_OBSERVATION_PROC)
+    let mut ble = match ADDR_TYPE {
+        OwnAddressType::Public => {
+            let gap_params = GapInitParams {
+                role: GapRole::Observer,
+                bd_addr: [0x01, 0x00, 0x00, 0xE1, 0x80, 0x00],
+                address_type: AddressType::Public,
+                ..GapInitParams::default()
+            };
+            HCI::new_with_gap_params(platform, runtime, Irqs, gap_params).await
+        }
+        _ => HCI::new_with_role(platform, runtime, Irqs, GapRole::Observer).await,
+    }
+    .expect("BLE initialization failed");
 
     info!("BLE stack initialized");
 

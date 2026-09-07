@@ -15,13 +15,17 @@ use embassy_sync::waitqueue::AtomicWaker;
 pub use embedded_hal_02::spi::{MODE_0, MODE_1, MODE_2, MODE_3, Mode, Phase, Polarity};
 pub use pac::spim::vals::Order as BitOrder;
 
-use crate::chip::{EASY_DMA_SIZE, FORCE_COPY_BUFFER_SIZE};
+use crate::chip::FORCE_COPY_BUFFER_SIZE;
 use crate::gpio::{self, AnyPin, OutputDrive, Pin as GpioPin, PselBits, SealedPin as _, convert_drive};
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac::gpio::vals as gpiovals;
+use crate::pac::spim::regs::RxMaxcnt;
 use crate::pac::spim::vals;
 use crate::util::slice_in_ram_or;
 use crate::{interrupt, pac};
+
+/// The maximum buffer size (in bytes) that the SPIM EasyDMA can transfer in one operation.
+pub const DMA_SIZE: usize = crate::util::easy_dma_max!(RxMaxcnt, set_maxcnt, maxcnt);
 
 /// SPI frequencies.
 #[repr(transparent)]
@@ -128,11 +132,12 @@ impl Into<pac::spim::vals::Frequency> for Frequency {
 }
 
 /// SPIM error
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     /// EasyDMA can only read from data memory, read only buffers in flash will fail.
+    #[error("buffer not in RAM: buffer is likely in flash which nRF DMA cannot access")]
     BufferNotInRAM,
 }
 
@@ -196,6 +201,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         }
 
         if r.events_end().read() != 0 {
+            #[cfg(feature = "_nrf54l")]
+            errata_55_69(r, false);
+
             s.waker.wake();
             r.intenclr().write(|w| w.set_end(true));
         }
@@ -382,6 +390,9 @@ impl<'d> Spim<'d> {
         r.events_end().write_value(0);
         r.intenset().write(|w| w.set_end(true));
 
+        #[cfg(feature = "_nrf54l")]
+        errata_55_69(r, true);
+
         // Start SPI transaction.
         r.tasks_start().write_value(1);
     }
@@ -397,6 +408,9 @@ impl<'d> Spim<'d> {
         // Wait for 'end' event.
         while self.r.events_end().read() == 0 {}
 
+        #[cfg(feature = "_nrf54l")]
+        errata_55_69(self.r, false);
+
         compiler_fence(Ordering::SeqCst);
     }
 
@@ -406,8 +420,8 @@ impl<'d> Spim<'d> {
         // slice can only be built from data located in RAM.
 
         let xfer_len = core::cmp::max(rx.len(), tx.len());
-        for offset in (0..xfer_len).step_by(EASY_DMA_SIZE) {
-            let length = core::cmp::min(xfer_len - offset, EASY_DMA_SIZE);
+        for offset in (0..xfer_len).step_by(DMA_SIZE) {
+            let length = core::cmp::min(xfer_len - offset, DMA_SIZE);
             self.blocking_inner_from_ram_chunk(rx, tx, offset, length);
         }
         Ok(())
@@ -460,8 +474,8 @@ impl<'d> Spim<'d> {
         // slice can only be built from data located in RAM.
 
         let xfer_len = core::cmp::max(rx.len(), tx.len());
-        for offset in (0..xfer_len).step_by(EASY_DMA_SIZE) {
-            let length = core::cmp::min(xfer_len - offset, EASY_DMA_SIZE);
+        for offset in (0..xfer_len).step_by(DMA_SIZE) {
+            let length = core::cmp::min(xfer_len - offset, DMA_SIZE);
             self.async_inner_from_ram_chunk(rx, tx, offset, length).await;
         }
         Ok(())
@@ -571,6 +585,19 @@ impl<'d> Spim<'d> {
         }
         Poll::Pending
     }
+}
+
+/// nRF54L errata 55/69 workaround.
+///
+/// Without it the SPIM can fail to raise END, which hangs a transfer:
+/// <https://github.com/nordicsemi/nrfx/blob/1b7bedb5c7f379a3ec3ece851796e94d7e5d0b2c/drivers/src/nrfx_spim.c#L855-L861>
+#[cfg(feature = "_nrf54l")]
+fn errata_55_69(r: pac::spim::Spim, enable: bool) {
+    unsafe {
+        (r.as_ptr() as *mut u32)
+            .add(0xc80 / 4)
+            .write_volatile(if enable { 0x82 } else { 0 })
+    };
 }
 
 impl<'d> Drop for Spim<'d> {

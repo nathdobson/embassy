@@ -19,6 +19,7 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::Pull;
@@ -29,7 +30,7 @@ use embassy_stm32_wpan::bluetooth::HCI;
 use embassy_stm32_wpan::bluetooth::hci::types::DtmPacketPayload;
 use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, Platform, new_platform};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 // ---- Test configuration ----
 #[allow(dead_code)]
@@ -49,12 +50,6 @@ bind_interrupts!(struct Irqs {
     RADIO => HighInterruptHandler;
     HASH => LowInterruptHandler;
 });
-
-/// RNG runner task
-#[embassy_executor::task]
-async fn rng_runner_task(platform: &'static Platform) {
-    platform.run_rng().await
-}
 
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
@@ -85,9 +80,6 @@ async fn main(spawner: Spawner) {
     let (platform, runtime) = new_platform!(Rng::new(p.RNG, Irqs), 8);
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
-
-    // Spawn the RNG runner task
-    spawner.spawn(rng_runner_task(platform).expect("Failed to spawn rng runner"));
 
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task(platform).expect("Failed to spawn BLE runner"));

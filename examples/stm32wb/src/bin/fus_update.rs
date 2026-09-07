@@ -3,6 +3,7 @@
 
 use cortex_m::peripheral::SCB;
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::ipcc::{Config, ReceiveInterruptHandler, TransmitInterruptHandler};
@@ -11,7 +12,7 @@ use embassy_stm32::rtc::Rtc;
 use embassy_stm32_wpan::TlMbox;
 use embassy_stm32_wpan::fus::FirmwareUpgrader;
 use embassy_time::{Duration, Timer};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs{
     IPCC_C1_RX => ReceiveInterruptHandler;
@@ -53,7 +54,7 @@ async fn main(_spawner: Spawner) {
     let config = Config::default();
     let mut mbox = TlMbox::init(p.IPCC, Irqs, config);
 
-    match mbox.sys_subsystem.wireless_fw_info() {
+    match mbox.sys.wireless_fw_info() {
         None => info!("not yet initialized"),
         Some(fw_info) => {
             let version_major = fw_info.version_major();
@@ -73,7 +74,7 @@ async fn main(_spawner: Spawner) {
     let mut updater = FirmwareUpgrader::new(rtc, 15);
 
     updater
-        .boot(mbox.sys_subsystem.read_ready().await.unwrap(), &mut mbox.sys_subsystem)
+        .boot(mbox.sys.read_ready().await.unwrap(), &mut mbox.sys)
         .await
         .unwrap();
 

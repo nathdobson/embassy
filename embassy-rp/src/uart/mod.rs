@@ -16,13 +16,14 @@ use crate::gpio::{AnyPin, SealedPin};
 use crate::interrupt::typelevel::{Binding, Interrupt as _};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::pac::io::vals::{Inover, Outover};
-use crate::{RegExt, dma, interrupt, pac, peripherals};
+use crate::{RegExt, dma, interrupt, mode, pac, peripherals};
 
 mod buffered;
 pub use buffered::{BufferedInterruptHandler, BufferedUart, BufferedUartRx, BufferedUartTx};
 
 /// Word length.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DataBits {
     /// 5 bits.
     DataBits5,
@@ -47,6 +48,7 @@ impl DataBits {
 
 /// Parity bit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Parity {
     /// No parity.
     ParityNone,
@@ -58,6 +60,7 @@ pub enum Parity {
 
 /// Stop bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StopBits {
     #[doc = "1 stop bit"]
     STOP1,
@@ -68,6 +71,7 @@ pub enum StopBits {
 /// UART config.
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
     /// Baud rate.
     pub baudrate: u32,
@@ -152,7 +156,7 @@ pub struct Uart<'d, M: Mode> {
 /// UART TX driver.
 pub struct UartTx<'d, M: Mode> {
     info: &'static Info,
-    tx_dma: Option<dma::Channel<'d>>,
+    tx_dma: Option<dma::Channel<'d, mode::Async>>,
     phantom: PhantomData<M>,
 }
 
@@ -160,12 +164,12 @@ pub struct UartTx<'d, M: Mode> {
 pub struct UartRx<'d, M: Mode> {
     info: &'static Info,
     dma_state: &'static DmaState,
-    rx_dma: Option<dma::Channel<'d>>,
+    rx_dma: Option<dma::Channel<'d, mode::Async>>,
     phantom: PhantomData<M>,
 }
 
 impl<'d, M: Mode> UartTx<'d, M> {
-    fn new_inner(info: &'static Info, tx_dma: Option<Channel<'d>>) -> Self {
+    fn new_inner(info: &'static Info, tx_dma: Option<Channel<'d, mode::Async>>) -> Self {
         Self {
             info,
             tx_dma,
@@ -236,12 +240,13 @@ impl<'d> UartTx<'d, Blocking> {
         self,
         _irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
         tx_buffer: &'d mut [u8],
-    ) -> BufferedUartTx {
+    ) -> BufferedUartTx<'d> {
         buffered::init_buffers(T::info(), T::buffered_state(), Some(tx_buffer), None);
 
         BufferedUartTx {
             info: T::info(),
             state: T::buffered_state(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -284,7 +289,7 @@ impl<'d, M: Mode> UartRx<'d, M> {
         info: &'static Info,
         dma_state: &'static DmaState,
         has_irq: bool,
-        rx_dma: Option<dma::Channel<'d>>,
+        rx_dma: Option<dma::Channel<'d, mode::Async>>,
     ) -> Self {
         debug_assert_eq!(has_irq, rx_dma.is_some());
         if has_irq {
@@ -365,12 +370,13 @@ impl<'d> UartRx<'d, Blocking> {
         self,
         _irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
         rx_buffer: &'d mut [u8],
-    ) -> BufferedUartRx {
+    ) -> BufferedUartRx<'d> {
         buffered::init_buffers(T::info(), T::buffered_state(), None, Some(rx_buffer));
 
         BufferedUartRx {
             info: T::info(),
             state: T::buffered_state(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -784,17 +790,19 @@ impl<'d> Uart<'d, Blocking> {
         _irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
         tx_buffer: &'d mut [u8],
         rx_buffer: &'d mut [u8],
-    ) -> BufferedUart {
+    ) -> BufferedUart<'d> {
         buffered::init_buffers(T::info(), T::buffered_state(), Some(tx_buffer), Some(rx_buffer));
 
         BufferedUart {
             rx: BufferedUartRx {
                 info: T::info(),
                 state: T::buffered_state(),
+                _phantom: PhantomData,
             },
             tx: BufferedUartTx {
                 info: T::info(),
                 state: T::buffered_state(),
+                _phantom: PhantomData,
             },
         }
     }
@@ -868,8 +876,8 @@ impl<'d, M: Mode> Uart<'d, M> {
         mut rts: Option<Peri<'d, AnyPin>>,
         mut cts: Option<Peri<'d, AnyPin>>,
         has_irq: bool,
-        tx_dma: Option<dma::Channel<'d>>,
-        rx_dma: Option<dma::Channel<'d>>,
+        tx_dma: Option<dma::Channel<'d, mode::Async>>,
+        rx_dma: Option<dma::Channel<'d, mode::Async>>,
         config: Config,
     ) -> Self {
         Self::init(
@@ -932,6 +940,11 @@ impl<'d, M: Mode> Uart<'d, M> {
                 #[cfg(feature = "_rp235x")]
                 w.set_iso(false);
                 w.set_ie(true);
+                if config.invert_rx {
+                    w.set_pde(true);
+                } else {
+                    w.set_pue(true);
+                }
             });
         }
         if let Some(pin) = &cts {
@@ -965,21 +978,7 @@ impl<'d, M: Mode> Uart<'d, M> {
             });
         }
 
-        Self::set_baudrate_inner(info, config.baudrate);
-
-        let (pen, eps) = match config.parity {
-            Parity::ParityNone => (false, false),
-            Parity::ParityOdd => (true, false),
-            Parity::ParityEven => (true, true),
-        };
-
-        r.uartlcr_h().write(|w| {
-            w.set_wlen(config.data_bits.bits());
-            w.set_stp2(config.stop_bits == StopBits::STOP2);
-            w.set_pen(pen);
-            w.set_eps(eps);
-            w.set_fen(true);
-        });
+        Self::set_config_inner(info, config);
 
         r.uartifls().write(|w| {
             w.set_rxiflsel(0b100);
@@ -1054,6 +1053,14 @@ impl<'d, M: Mode> Uart<'d, M> {
     }
 
     fn set_baudrate_inner(info: &Info, baudrate: u32) {
+        Self::set_baudrate_nowait(info, baudrate);
+
+        // wait for tx to clear before returning
+        Self::lcr_modify(info, |_| {});
+    }
+
+    /// Set the baudrate without waiting for the tx to clear
+    fn set_baudrate_nowait(info: &Info, baudrate: u32) {
         let r = info.regs;
 
         let clk_base = crate::clocks::clk_peri_freq();
@@ -1073,8 +1080,28 @@ impl<'d, M: Mode> Uart<'d, M> {
         // Load PL011's baud divisor registers
         r.uartibrd().write_value(pac::uart::regs::Uartibrd(baud_ibrd));
         r.uartfbrd().write_value(pac::uart::regs::Uartfbrd(baud_fbrd));
+    }
 
-        Self::lcr_modify(info, |_| {});
+    /// Set the configuration at runtime (ignores pin inversions)
+    pub fn set_config(&mut self, config: Config) {
+        Self::set_config_inner(self.tx.info, config);
+    }
+
+    fn set_config_inner(info: &Info, config: Config) {
+        Self::set_baudrate_nowait(info, config.baudrate);
+        let (pen, eps) = match config.parity {
+            Parity::ParityNone => (false, false),
+            Parity::ParityOdd => (true, false),
+            Parity::ParityEven => (true, true),
+        };
+
+        Self::lcr_modify(info, |w| {
+            w.set_wlen(config.data_bits.bits());
+            w.set_stp2(config.stop_bits == StopBits::STOP2);
+            w.set_pen(pen);
+            w.set_eps(eps);
+            w.set_fen(true);
+        })
     }
 }
 

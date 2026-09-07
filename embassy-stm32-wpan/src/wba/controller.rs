@@ -182,51 +182,6 @@ impl<'d, T: Runtime> Controller<'d, T> {
             }
         }
     }
-
-    #[cfg(feature = "wb-hci")]
-    pub async fn read_event(&mut self) -> Result<stm32wb_hci::Event, stm32wb_hci::event::Error> {
-        use stm32wb_hci::Event;
-        use stm32wb_hci::event::Packet;
-
-        if let Some(buf) = self.pop_buf() {
-            Event::new(Packet(&buf[1..]))
-        } else {
-            let slot = self.receiver.receive().await;
-            // Parse and queue the event for processing.
-            // Skip byte 0 (0x04 HCI Event packet indicator) — the parser expects
-            // data starting at the event code byte.
-            let parse_data = if *&slot.len() >= 2 && *&slot[0] == 0x04 {
-                &slot[1..]
-            } else {
-                &slot
-            };
-
-            let event = Event::new(Packet(parse_data));
-
-            slot.receive_done();
-
-            event
-        }
-    }
-}
-
-#[cfg(feature = "wb-hci")]
-impl<'d, T: Runtime> stm32wb_hci::Controller for Controller<'d, T> {
-    async fn controller_read_into(&mut self, _buf: &mut [u8]) {
-        panic!("use `read_event` to read events")
-    }
-
-    async fn controller_write(&mut self, opcode: stm32wb_hci::Opcode, payload: &[u8]) {
-        use stm32wb_hci::host::HciHeader;
-        use stm32wb_hci::vendor::CommandHeader;
-
-        self.exec(|buf| {
-            let (header, pkt) = buf.split_at_mut(CommandHeader::HEADER_LENGTH);
-
-            CommandHeader::new(opcode, payload.len()).copy_into_slice(header);
-            pkt[..payload.len()].copy_from_slice(payload);
-        });
-    }
 }
 
 #[cfg(feature = "bt-hci")]
@@ -255,9 +210,15 @@ impl<'d, T: Runtime> embedded_io::ErrorType for ControllerAdapter<'d, T> {
 
 #[cfg(feature = "bt-hci")]
 impl<'d, T: Runtime> bt_hci::controller::Controller for ControllerAdapter<'d, T> {
+    // Received packets borrow the controller's own event slots, not a caller buffer.
+    type Buffer<'a> = ();
+
+    fn alloc_buf(&self) -> Result<Self::Buffer<'_>, Self::Error> {
+        Ok(())
+    }
+
     async fn write_acl_data(&self, packet: &bt_hci::data::AclPacket<'_>) -> Result<(), Self::Error> {
-        use bt_hci::WriteHci;
-        use bt_hci::transport::WithIndicator;
+        use bt_hci::transport::{PacketToController, WithIndicator};
 
         let mut controller = self.controller.borrow().borrow_mut();
 
@@ -273,8 +234,7 @@ impl<'d, T: Runtime> bt_hci::controller::Controller for ControllerAdapter<'d, T>
     }
 
     async fn write_sync_data(&self, packet: &bt_hci::data::SyncPacket<'_>) -> Result<(), Self::Error> {
-        use bt_hci::WriteHci;
-        use bt_hci::transport::WithIndicator;
+        use bt_hci::transport::{PacketToController, WithIndicator};
 
         let mut controller = self.controller.borrow().borrow_mut();
 
@@ -285,7 +245,10 @@ impl<'d, T: Runtime> bt_hci::controller::Controller for ControllerAdapter<'d, T>
         })
     }
 
-    async fn read<'a>(&self, _buf: &'a mut [u8]) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
+    async fn read<'a>(
+        &self,
+        _buf: &'a mut Self::Buffer<'_>,
+    ) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
         use core::future::poll_fn;
         use core::task::Poll;
 
@@ -320,8 +283,8 @@ where
     C: bt_hci::cmd::SyncCmd,
 {
     async fn exec(&self, cmd: &C) -> Result<C::Return, bt_hci::cmd::Error<Self::Error>> {
-        use bt_hci::transport::WithIndicator;
-        use bt_hci::{WriteHci, cmd};
+        use bt_hci::cmd;
+        use bt_hci::transport::{PacketToController, WithIndicator};
 
         use crate::util::make_cc_with_cs;
 
@@ -345,8 +308,7 @@ where
     C: bt_hci::cmd::AsyncCmd,
 {
     async fn exec(&self, cmd: &C) -> Result<(), bt_hci::cmd::Error<Self::Error>> {
-        use bt_hci::WriteHci;
-        use bt_hci::transport::WithIndicator;
+        use bt_hci::transport::{PacketToController, WithIndicator};
 
         use crate::util::make_cc_with_cs;
 
@@ -371,15 +333,4 @@ impl<'d, T: Runtime> Drop for Controller<'d, T> {
         // init_ble_stack() → BleStack_Init() can run cleanly on next Ble::new().
         crate::wba::ll_sys::reset_ble_stack();
     }
-}
-
-/// Version information from the BLE controller
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct VersionInfo {
-    pub hci_version: u8,
-    pub hci_revision: u16,
-    pub lmp_version: u8,
-    pub manufacturer_name: u16,
-    pub lmp_subversion: u16,
 }

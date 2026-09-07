@@ -6,9 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- next-header -->
-## Unreleased - ReleaseDate
 
+## Unreleased - ReleaseDate
+- TRNG: retry failed health checks instead of hanging or panicking, panic only after 1000 consecutive failures.
+- TRNG: wait for the soft reset to complete before applying the configuration.
+- TRNG: stop the block and disable the interrupt when `fill_bytes` is dropped.
+- TRNG: `Config::default()` now uses `sample_count: 200` (was 25).
+- USB: support device-initiated remote wakeup on RP2040 and RP235x
+- USB device: clearing an endpoint halt now resets the data toggle to DATA0.
+- USB device: stalling an endpoint with a transfer in flight no longer lets that transfer complete, and the queued packet is no longer delivered once the halt is cleared.
+- USB device: a suspend latched before a bus reset no longer produces a spurious Suspend event that wedges enumeration.
+- Fix i2c_slave respond_to_read for buffers larger than one chunk
+
+- Update `fixed` dependency
 - DMA: clear channel `EN` bit before `chan_abort` on RP2350, per errata RP2350-E5 (see pico-sdk `dma_channel_abort` docs). Prevents the aborted channel from re-triggering.
+- PIO: add `Config::set_input_sync_bypass` to declare input synchronizer bypass pins; the bypass is applied inside `StateMachine::set_config` once `GPIOBASE` is established, fixing bypass for pins >= 32 on RP2350B.
+- breaking: Remove `<T: Instance>` from `Spi`, `I2c` and `I2cSlave` ([#4900](https://github.com/embassy-rs/embassy/pull/4900))
+- Add set_baudrate() to BufferedUartTx.
 
 ## 0.10.0 - 2026-03-10
 - Add AON Timer driver for RP2350 with configurable clock sources and alarm wake modes
@@ -34,8 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix chrono compilation
 - Update embassy-sync to 0.8.0
 - Update embassy-embedded-hal to 0.6.0
+- Add PIO NEC ir tx and rx
+- Add I2C async bus lockup detection and recovery
 
 ## 0.9.0 - 2025-11-27
+
 - Add documentation for pio `get_x` about autopush.
 - Fix several minor typos in documentation
 - Add PIO SPI
@@ -53,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.8.0 - 2025-08-26
 
 ## 0.7.1 - 2025-08-26
+
 - add `i2c` internal pullup options ([#4564](https://github.com/embassy-rs/embassy/pull/4564))
 
 ## 0.7.0 - 2025-08-04

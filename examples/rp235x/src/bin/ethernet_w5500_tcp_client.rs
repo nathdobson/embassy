@@ -8,21 +8,21 @@
 use core::str::FromStr;
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_futures::yield_now;
-use embassy_net::{Stack, StackResources};
+use embassy_net::StackStorage;
 use embassy_net_wiznet::chip::W5500;
 use embassy_net_wiznet::*;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, SPI0};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1};
 use embassy_rp::spi::{Async, Config as SpiConfig, Spi};
 use embassy_rp::{bind_interrupts, dma};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_io_async::Write;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>;
@@ -33,7 +33,7 @@ async fn ethernet_task(
     runner: Runner<
         'static,
         W5500,
-        ExclusiveDevice<Spi<'static, SPI0, Async>, Output<'static>, Delay>,
+        ExclusiveDevice<Spi<'static, Async>, Output<'static>, Delay>,
         Input<'static>,
         Output<'static>,
     >,
@@ -42,11 +42,11 @@ async fn ethernet_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, Device<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let mut rng = RoscRng;
@@ -78,31 +78,32 @@ async fn main(spawner: Spawner) {
     let seed = rng.next_u64();
 
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-    let (stack, runner) = embassy_net::new(
-        device,
-        embassy_net::Config::dhcpv4(Default::default()),
-        RESOURCES.init(StackResources::new()),
-        seed,
-    );
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
+    let (stack, runner) = embassy_net::Stack::new(STACK.init(StackStorage::new()), seed);
+
+    // Add the network interface to the stack.
+    static DEVICE: StaticCell<Device<'static>> = StaticCell::new();
+    let iface = unwrap!(stack.add_iface(DEVICE.init(device)));
+    iface.set_dhcpv4(Some(Default::default()));
 
     // Launch network task
     spawner.spawn(unwrap!(net_task(runner)));
 
     info!("Waiting for DHCP...");
-    let cfg = wait_for_config(stack).await;
-    let local_addr = cfg.address.address();
+    iface.wait_config_up().await;
+    let lease = unwrap!(iface.dhcpv4_lease());
+    let local_addr = lease.address.address();
     info!("IP address: {:?}", local_addr);
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     loop {
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        let mut socket = unwrap!(embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer));
         socket.set_timeout(Some(Duration::from_secs(10)));
 
         led.set_low();
         info!("Connecting...");
-        let host_addr = embassy_net::Ipv4Address::from_str("192.168.0.118").unwrap();
+        let host_addr = embassy_net::wire::Ipv4Address::from_str("192.168.0.118").unwrap();
         if let Err(e) = socket.connect((host_addr, 1234)).await {
             warn!("connect error: {:?}", e);
             continue;
@@ -119,14 +120,5 @@ async fn main(spawner: Spawner) {
             info!("txd: {}", core::str::from_utf8(msg).unwrap());
             Timer::after_secs(1).await;
         }
-    }
-}
-
-async fn wait_for_config(stack: Stack<'static>) -> embassy_net::StaticConfigV4 {
-    loop {
-        if let Some(config) = stack.config_v4() {
-            return config.clone();
-        }
-        yield_now().await;
     }
 }

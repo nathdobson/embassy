@@ -6,6 +6,7 @@ teleprobe_meta::target!(b"rpi-pico");
 teleprobe_meta::target!(b"pimoroni-pico-plus-2");
 
 use defmt::{assert_eq, panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
@@ -13,13 +14,13 @@ use embassy_rp::peripherals::UART0;
 use embassy_rp::uart::{BufferedInterruptHandler, BufferedUart, BufferedUartRx, Config, Error, Parity};
 use embassy_time::Timer;
 use embedded_io_async::{Read, ReadExactError, Write};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
 });
 
-async fn read<const N: usize>(uart: &mut BufferedUart) -> Result<[u8; N], Error> {
+async fn read<const N: usize>(uart: &mut BufferedUart<'_>) -> Result<[u8; N], Error> {
     let mut buf = [255; N];
     match uart.read_exact(&mut buf).await {
         Ok(()) => Ok(buf),
@@ -29,7 +30,7 @@ async fn read<const N: usize>(uart: &mut BufferedUart) -> Result<[u8; N], Error>
     }
 }
 
-async fn read1<const N: usize>(uart: &mut BufferedUartRx) -> Result<[u8; N], Error> {
+async fn read1<const N: usize>(uart: &mut BufferedUartRx<'_>) -> Result<[u8; N], Error> {
     let mut buf = [255; N];
     match uart.read_exact(&mut buf).await {
         Ok(()) => Ok(buf),

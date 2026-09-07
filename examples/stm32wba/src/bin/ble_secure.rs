@@ -20,6 +20,7 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::aes::{self, Aes};
 use embassy_stm32::peripherals::{AES as AesPeriph, PKA as PkaPeriph};
@@ -28,14 +29,16 @@ use embassy_stm32::rcc::{self};
 use embassy_stm32::rng::{self, Rng};
 use embassy_stm32::{Config, bind_interrupts};
 use embassy_stm32_wpan::bluetooth::HCI;
+use embassy_stm32_wpan::bluetooth::gap::types::OwnAddressType;
 use embassy_stm32_wpan::bluetooth::gap::{AdvData, AdvParams, AdvType, GapEvent};
+use embassy_stm32_wpan::bluetooth::gap_init::{AddressType, GapInitParams};
 use embassy_stm32_wpan::bluetooth::gatt::{CharProperties, GattEventMask, SecurityPermissions, ServiceType, Uuid};
-use embassy_stm32_wpan::bluetooth::security::{SecureConnectionsSupport, SecurityParams};
+use embassy_stm32_wpan::bluetooth::security::{IoCapability, SecureConnectionsSupport, SecurityEvent, SecurityParams};
 use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, Platform, new_platform};
+use panic_probe as _;
 use stm32wb_hci::Event;
 use stm32wb_hci::event::EncryptionChange;
-use stm32wb_hci::vendor::event::{GapNumericComparisonValue, GapPairingComplete, GapPairingStatus, VendorEvent};
-use {defmt_rtt as _, panic_probe as _};
+use stm32wb_hci::vendor::event::VendorEvent;
 
 bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
@@ -50,11 +53,8 @@ const SECURE_SERVICE_UUID: u16 = 0xABCD;
 /// Characteristic that requires encryption
 const SECURE_CHAR_UUID: u16 = 0xABCE;
 
-/// RNG runner task
-#[embassy_executor::task]
-async fn rng_runner_task(platform: &'static Platform) {
-    platform.run_rng().await
-}
+// ---- Test configuration ----
+const ADDR_TYPE: OwnAddressType = OwnAddressType::Random;
 
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
@@ -74,23 +74,29 @@ async fn main(spawner: Spawner) {
     // Initialize hardware peripherals required by BLE stack
     let (platform, runtime) = new_platform!(
         Rng::new(p.RNG, Irqs),
+        Pka::new(p.PKA, Irqs),
         Aes::new_blocking(p.AES, Irqs),
-        Pka::new_blocking(p.PKA, Irqs),
         8
     );
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
 
-    // Spawn the RNG runner task
-    spawner.spawn(rng_runner_task(platform).expect("Failed to spawn rng runner"));
-
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task(platform).expect("Failed to spawn BLE runner"));
 
     // Initialize BLE stack
-    let mut ble = HCI::new(platform, runtime, Irqs)
-        .await
-        .expect("BLE initialization failed");
+    let mut ble = match ADDR_TYPE {
+        OwnAddressType::Public => {
+            let gap_params = GapInitParams {
+                bd_addr: [0x01, 0x00, 0x00, 0xE1, 0x80, 0x00],
+                address_type: AddressType::Public,
+                ..GapInitParams::default()
+            };
+            HCI::new_with_gap_params(platform, runtime, Irqs, gap_params).await
+        }
+        _ => HCI::new(platform, runtime, Irqs).await,
+    }
+    .expect("BLE initialization failed");
 
     // ===== Configure Security =====
     let mut security = ble.security_manager();
@@ -103,7 +109,8 @@ async fn main(spawner: Spawner) {
         .with_bonding(true)
         .with_mitm_protection(true)
         .with_secure_connections(SecureConnectionsSupport::Optional)
-        .with_key_size_range(7, 16);
+        .with_key_size_range(7, 16)
+        .with_io_capability(IoCapability::DisplayYesNo);
 
     security
         .set_authentication_requirements(security_params)
@@ -150,6 +157,7 @@ async fn main(spawner: Spawner) {
         interval_min: 0x0050,
         interval_max: 0x0050,
         adv_type: AdvType::ConnectableUndirected,
+        own_addr_type: ADDR_TYPE,
         ..AdvParams::default()
     };
 
@@ -188,13 +196,21 @@ async fn main(spawner: Spawner) {
                     info!("  Handle: 0x{:04X}", conn.handle.0);
                     info!("  Peer: {}", conn.peer_address);
 
-                    info!("Waiting for pairing request...");
-                    info!("(Try to read the secure characteristic to trigger pairing)");
+                    if let Err(e) = security.request_pairing(conn.handle.0) {
+                        warn!("request_pairing failed: {:?}", e);
+                    } else {
+                        info!("Pairing requested — waiting for central to respond...");
+                    }
                 }
 
                 GapEvent::Disconnected { handle, reason } => {
                     info!("=== DISCONNECTED ===");
-                    info!("  Handle: 0x{:04X}, Reason: 0x{:02X}", handle.0, reason);
+                    info!(
+                        "  Handle: 0x{:04X}, Reason: 0x{:02X} ({})",
+                        handle.0,
+                        reason.as_u8(),
+                        Display2Format(&reason)
+                    );
 
                     // Restart advertising
                     ble.start_advertising(adv_params.clone(), create_adv_data(), None)
@@ -208,73 +224,80 @@ async fn main(spawner: Spawner) {
         }
 
         // Process security events
-        match &event {
-            Event::Vendor(VendorEvent::GapPairingComplete(GapPairingComplete {
-                conn_handle,
-                status,
-                reason,
-            })) => {
-                info!("=== PAIRING COMPLETE ===");
-                info!("  Connection: 0x{:04X}", conn_handle.0);
-
-                match status {
-                    GapPairingStatus::Success => {
-                        info!("  Status: SUCCESS");
+        if let Some(security_event) = ble.process_security_event(&event) {
+            match security_event {
+                SecurityEvent::PairingComplete {
+                    conn_handle,
+                    status,
+                    reason,
+                } => {
+                    info!("=== PAIRING COMPLETE ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+                    info!("  Status: {:?}, Reason: 0x{:02X}", status, reason);
+                    if matches!(status, embassy_stm32_wpan::bluetooth::security::PairingStatus::Success) {
                         info!("  Device is now bonded and can access secure characteristics");
                     }
-                    GapPairingStatus::Timeout => {
-                        info!("  Status: TIMEOUT");
-                        info!("  Pairing timed out - please try again");
+                }
+                SecurityEvent::PasskeyRequest { conn_handle } => {
+                    info!("=== PASSKEY REQUEST ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+
+                    // For demo: fixed passkey.
+                    let passkey: u32 = 123456;
+                    info!("  Passkey: {:06}", passkey);
+                    info!("  Enter this passkey on your phone/device!");
+
+                    if let Err(e) = security.pass_key_response(conn_handle, passkey) {
+                        error!("Failed to send passkey response: {:?}", e);
                     }
-                    GapPairingStatus::Failed => {
-                        info!("  Status: FAILED");
-                        info!("  Reason: 0x{:02X} ({})", reason, reason);
+                }
+                SecurityEvent::NumericComparisonRequest {
+                    conn_handle,
+                    numeric_value,
+                } => {
+                    info!("=== NUMERIC COMPARISON ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+                    info!("  Displayed value: {:06}", numeric_value);
+
+                    // Auto-confirm for this example.
+                    let confirm = true;
+                    info!("  Auto-confirming: {}", if confirm { "YES" } else { "NO" });
+
+                    if let Err(e) = security.numeric_comparison_response(conn_handle, confirm) {
+                        error!("Failed to send numeric comparison response: {:?}", e);
                     }
                 }
-            }
-            Event::Vendor(VendorEvent::GapPassKeyRequest(conn_handle)) => {
-                info!("=== PASSKEY REQUEST ===");
-                info!("  Connection: 0x{:04X}", conn_handle.0);
-
-                // Generate a random passkey (in production, display this to user)
-                // For this example, we use a fixed passkey
-                let passkey: u32 = 123456;
-                info!("  Passkey: {:06}", passkey);
-                info!("  Enter this passkey on your phone/device!");
-
-                if let Err(e) = security.pass_key_response(conn_handle.0, passkey) {
-                    error!("Failed to send passkey response: {:?}", e);
+                SecurityEvent::BondLost { conn_handle } => {
+                    info!("=== BOND LOST ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+                    if let Err(e) = security.allow_rebond(conn_handle) {
+                        warn!("Failed to allow rebond: {:?}", e);
+                    }
+                }
+                SecurityEvent::PairingRequest { .. } => {}
+                SecurityEvent::AuthorizationRequest { conn_handle } => {
+                    info!("=== AUTHORIZATION REQUEST ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+                }
+                SecurityEvent::PeripheralSecurityInitiated => {
+                    info!("=== PERIPHERAL SECURITY INITIATED ===");
+                }
+                SecurityEvent::AddressNotResolved { conn_handle } => {
+                    warn!("=== ADDRESS NOT RESOLVED ===");
+                    warn!("  Connection: 0x{:04X}", conn_handle);
+                }
+                SecurityEvent::KeypressNotification {
+                    conn_handle,
+                    notification_type,
+                } => {
+                    info!("=== KEYPRESS NOTIFICATION ===");
+                    info!("  Connection: 0x{:04X}", conn_handle);
+                    info!("  Notification: {:?}", notification_type);
                 }
             }
+        }
 
-            Event::Vendor(VendorEvent::GapNumericComparisonValue(GapNumericComparisonValue {
-                connection_handle,
-                numeric_value,
-            })) => {
-                info!("=== NUMERIC COMPARISON ===");
-                info!("  Connection: 0x{:04X}", connection_handle.0);
-                info!("  Displayed value: {:06}", numeric_value);
-                info!("  Confirm this matches the value on your phone!");
-
-                // Auto-confirm for this example (in production, wait for user input)
-                // Set to true to accept, false to reject
-                let confirm = true;
-                info!("  Auto-confirming: {}", if confirm { "YES" } else { "NO" });
-
-                if let Err(e) = security.numeric_comparison_response(connection_handle.0, confirm) {
-                    error!("Failed to send numeric comparison response: {:?}", e);
-                }
-            }
-            Event::Vendor(VendorEvent::GapBondLost) => {
-                info!("=== BOND LOST ===");
-                //                info!("  Connection: 0x{:04X}", conn_handle.0);
-                //                info!("  Previous bond invalid, allowing rebond...");
-                //
-                //                if let Err(e) = security.allow_rebond(conn_handle.as_u16()) {
-                //                    error!("Failed to allow rebond: {:?}", e);
-                //                }
-            }
-
+        match &event {
             // TODO: Not currently implemented
 
             //            EventParams::GapPairingRequest { conn_handle, is_bonded } => {

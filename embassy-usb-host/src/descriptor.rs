@@ -592,7 +592,7 @@ impl<'a> ConfigurationDescriptorChain<'a> {
         let first_interface_offset = self
             .iter_descriptors()
             .find_map(|(offset, bytes)| {
-                if bytes[1] == descriptor_type::INTERFACE {
+                if bytes.get(1) == Some(&descriptor_type::INTERFACE) {
                     Some(offset)
                 } else {
                     None
@@ -892,6 +892,9 @@ impl Iterator for EndpointIterator<'_> {
         }
         while self.buffer_idx + 7 <= self.iface_desc.buffer.len() {
             let working = &self.iface_desc.buffer[self.buffer_idx..];
+            if working[0] == 0 {
+                return None;
+            }
             self.buffer_idx += working[0] as usize;
             if let Ok(d) = EndpointDescriptor::try_from_bytes(working) {
                 self.index += 1;
@@ -1117,6 +1120,29 @@ impl StringDescriptor {
         }
         Self { string }
     }
+
+    /// Alternate to [USBDescriptor::try_from_bytes] that allows invalid UNICODE data.
+    ///
+    /// Invalid data will be replaced with [`U+FFFD` REPLACEMENT CHARACTER](char::REPLACEMENT_CHARACTER) (�).
+    fn try_from_bytes_lossy(bytes: &[u8]) -> Result<Self, DescriptorError> {
+        Self::match_bytes(bytes)?;
+        let len = bytes[0];
+        let mut utf16: Vec<u16, { Self::MAX_UTF16 }> = Vec::new();
+        for i in (2..len as usize).step_by(2) {
+            if let Some(data) = bytes.get(i..i + 2) {
+                let value = u16::from_le_bytes([data[0], data[1]]);
+                let result = utf16.push(value);
+                debug_assert!(result.is_ok(), "must fit");
+            }
+        }
+        let mut string = String::new();
+        for c_result in char::decode_utf16(utf16.into_iter()) {
+            let c = c_result.unwrap_or(char::REPLACEMENT_CHARACTER);
+            let result = string.push(c);
+            debug_assert!(result.is_ok(), "must fit");
+        }
+        Ok(Self { string })
+    }
 }
 
 impl TryFrom<&str> for StringDescriptor {
@@ -1191,6 +1217,23 @@ impl WritableDescriptor for StringDescriptor {
             }
         }
         Ok(bytes[0] as usize)
+    }
+}
+
+/// A [StringDescriptor] wrapper that allows invalid UNICODE data.
+///
+/// Invalid data will be replaced with [`U+FFFD` REPLACEMENT CHARACTER](char::REPLACEMENT_CHARACTER) (�).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct StringDescriptorLossy(pub StringDescriptor);
+
+impl USBDescriptor for StringDescriptorLossy {
+    const BUF_SIZE: usize = StringDescriptor::BUF_SIZE;
+    const DESC_TYPE: u8 = descriptor_type::STRING;
+    type Error = DescriptorError;
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self(StringDescriptor::try_from_bytes_lossy(bytes)?))
     }
 }
 
@@ -1503,6 +1546,20 @@ mod test {
     }
 
     #[test]
+    fn string_descriptor_lossy() {
+        let bytes = [4, descriptor_type::STRING, 0xDC, 0xDC]; // unpaired trailing surrogate
+        assert_eq!(
+            StringDescriptor::try_from_bytes(&bytes),
+            Err(DescriptorError::BadDescriptorData)
+        );
+        let lossy = StringDescriptorLossy(StringDescriptor {
+            string: String::try_from("\u{FFFD}").expect("must fit"),
+        });
+        assert_eq!(StringDescriptor::try_from_bytes_lossy(&bytes), Ok(lossy.0.clone()));
+        assert_eq!(StringDescriptorLossy::try_from_bytes(&bytes), Ok(lossy.clone()));
+    }
+
+    #[test]
     fn roundtrip_string_descriptor_1_3() {
         let c = '\u{FFFD}'; // U+FFFD REPLACEMENT CHARACTER
         assert_eq!(c.len_utf16(), 1);
@@ -1534,5 +1591,26 @@ mod test {
             assert_eq!(descriptor.write_to_bytes(&mut bytes), Ok(2 + 2 * n));
             assert_eq!(StringDescriptor::try_from_bytes(&bytes), Ok(descriptor));
         }
+    }
+
+    /// A 1-byte descriptor must not be indexed past its end.
+    #[test]
+    fn iter_interface_skips_short_descriptors() {
+        const BUF: [u8; 10] = [9, 2, 10, 0, 1, 1, 0, 0x80, 50, 0x01];
+        let cfg = ConfigurationDescriptorChain::try_from_slice(&BUF).expect("configuration parses");
+        assert_eq!(cfg.iter_interface().count(), 0);
+    }
+
+    /// A zero-length descriptor must end the walk instead of stalling it.
+    #[test]
+    fn iter_endpoints_stops_at_zero_length_descriptor() {
+        const BUF: [u8; 25] = [
+            9, 2, 25, 0, 1, 1, 0, 0x80, 50, // configuration
+            9, 4, 0, 0, 1, 0, 0, 0, 0, // interface declaring one endpoint
+            0, 0, 0, 0, 0, 0, 0, // zero-length descriptor
+        ];
+        let cfg = ConfigurationDescriptorChain::try_from_slice(&BUF).expect("configuration parses");
+        let iface = cfg.iter_interface().next().expect("one interface");
+        assert_eq!(iface.iter_endpoints().count(), 0);
     }
 }
