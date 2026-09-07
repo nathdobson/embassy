@@ -5,7 +5,6 @@ edition = "2024"
 description = "no-std, no-alloc utilities for working with futures"
 repository = "https://github.com/embassy-rs/embassy"
 documentation = "https://docs.embassy.dev/embassy-futures"
-readme = "README.md"
 license = "MIT OR Apache-2.0"
 categories = [
     "embedded",

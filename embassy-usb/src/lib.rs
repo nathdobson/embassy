@@ -2,6 +2,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
+#![allow(deprecated)]
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
